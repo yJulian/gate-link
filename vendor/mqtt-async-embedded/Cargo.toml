@@ -1,0 +1,19 @@
+[package]
+name = "mqtt-async-embedded"
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Vendored/patched fork of mqtt-async-embedded: adds CONNECT username/password support and a working PUBLISH encoder, drops the unused v5/transport-smoltcp code paths."
+
+[lib]
+name = "mqtt_async_embedded"
+path = "src/lib.rs"
+
+[features]
+default = []
+defmt = ["dep:defmt"]
+
+[dependencies]
+embassy-time = "0.5.0"
+heapless = "0.9"
+defmt = { version = "1.0.1", optional = true }
