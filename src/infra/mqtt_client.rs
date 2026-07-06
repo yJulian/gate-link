@@ -15,6 +15,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::net::IpAddr;
+use core::cell::RefCell;
 
 use embassy_futures::select::{select, Either};
 use embassy_net::dns::DnsQueryType;
@@ -52,22 +53,55 @@ struct OutgoingMessage {
     topic: String,
     payload: Vec<u8>,
     qos: QoS,
+    retain: bool,
 }
 
 static INCOMING: Channel<CriticalSectionRawMutex, IncomingMessage, QUEUE_DEPTH> = Channel::new();
 static OUTGOING: Channel<CriticalSectionRawMutex, OutgoingMessage, QUEUE_DEPTH> = Channel::new();
+
+#[derive(Clone, Debug)]
+pub struct Subscription {
+    pub topic: String,
+    pub qos: QoS,
+}
+
+static SUBSCRIPTIONS: embassy_sync::blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<Vec<Subscription>>> =
+    embassy_sync::blocking_mutex::Mutex::new(RefCell::new(Vec::new()));
+
+static SUB_QUEUE: Channel<CriticalSectionRawMutex, Subscription, QUEUE_DEPTH> = Channel::new();
+
+/// Adds a subscription and queues it for the active connection.
+///
+/// If the connection is currently down, the subscription will be registered
+/// automatically as soon as it reconnects.
+pub async fn subscribe(topic: impl Into<String>, qos: QoS) {
+    let sub = Subscription {
+        topic: topic.into(),
+        qos,
+    };
+    SUBSCRIPTIONS.lock(|list| {
+        list.borrow_mut().push(sub.clone());
+    });
+    SUB_QUEUE.send(sub).await;
+}
 
 /// Queues a message for publishing as soon as the connection is up.
 ///
 /// Safe to call from any task, including ones that have nothing to do with the
 /// MQTT connection itself — this is the intended way for other modules to send
 /// MQTT messages without reaching into the socket owned by [`task`].
-pub async fn publish(topic: impl Into<String>, payload: impl Into<Vec<u8>>, qos: QoS) {
+pub async fn publish(
+    topic: impl Into<String>,
+    payload: impl Into<Vec<u8>>,
+    qos: QoS,
+    retain: bool,
+) {
     OUTGOING
         .send(OutgoingMessage {
             topic: topic.into(),
             payload: payload.into(),
             qos,
+            retain,
         })
         .await;
 }
@@ -152,8 +186,20 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
     client.connect().await.map_err(|_| "MQTT CONNECT failed")?;
     log::info!("Connected to MQTT broker at {}", cfg.mqtt_host);
 
+    let existing_subs = SUBSCRIPTIONS.lock(|list| {
+        while SUB_QUEUE.try_receive().is_ok() {}
+        list.borrow().clone()
+    });
+    for sub in &existing_subs {
+        client
+            .subscribe(&sub.topic, sub.qos)
+            .await
+            .map_err(|_| "MQTT re-subscribe failed")?;
+        log::info!("Re-subscribed to {}", sub.topic);
+    }
+
     loop {
-        match select(client.poll(), OUTGOING.receive()).await {
+        match select(client.poll(), select(OUTGOING.receive(), SUB_QUEUE.receive())).await {
             Either::First(poll_result) => {
                 if let Some(MqttEvent::Publish(p)) =
                     poll_result.map_err(|_| "MQTT connection error")?
@@ -165,11 +211,18 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
                     INCOMING.send(message).await;
                 }
             }
-            Either::Second(out) => {
+            Either::Second(Either::First(out)) => {
                 client
-                    .publish(&out.topic, &out.payload, out.qos)
+                    .publish(&out.topic, &out.payload, out.qos, out.retain)
                     .await
                     .map_err(|_| "MQTT publish failed")?;
+            }
+            Either::Second(Either::Second(sub)) => {
+                client
+                    .subscribe(&sub.topic, sub.qos)
+                    .await
+                    .map_err(|_| "MQTT subscribe failed")?;
+                log::info!("Subscribed to {}", sub.topic);
             }
         }
     }

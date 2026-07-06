@@ -203,6 +203,7 @@ impl DecodePacket<'_> for ConnAck {
 pub struct Publish<'a> {
     pub topic: &'a str,
     pub qos: QoS,
+    pub retain: bool,
     pub payload: &'a [u8],
     pub packet_id: Option<u16>,
 }
@@ -214,6 +215,7 @@ impl<'a> DecodePacket<'a> for Publish<'a> {
             2 => QoS::ExactlyOnce,
             _ => return Err(MqttError::Protocol(ProtocolError::MalformedPacket)),
         };
+        let retain = (buf[0] & 0x01) != 0;
         let mut cursor = 1;
         let _remaining_len = read_variable_byte_integer(&mut cursor, buf)?;
         let topic = read_utf8_string(&mut cursor, buf)?;
@@ -235,6 +237,7 @@ impl<'a> DecodePacket<'a> for Publish<'a> {
         Ok(Publish {
             topic,
             qos,
+            retain,
             payload,
             packet_id,
         })
@@ -271,7 +274,7 @@ impl<'a> EncodePacket for Publish<'a> {
             util::write_variable_byte_integer_len(&mut buf[remaining_len_pos..], remaining_len)?;
         let header_len = 1 + len_bytes;
         buf.copy_within(content_start..cursor, header_len);
-        buf[header_byte_pos] = 0x30 | ((self.qos as u8) << 1);
+        buf[header_byte_pos] = 0x30 | ((self.qos as u8) << 1) | (self.retain as u8);
         Ok(header_len + remaining_len)
     }
 }

@@ -7,17 +7,17 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
-use esp_radio::ble::controller::BleConnector;
 use esp_radio::wifi::Interface;
 use esp_storage::FlashStorage;
+use esp_hal::gpio::Pin;
 use log::{error, info};
-use mqtt_gate::app::mqtt_handler;
+use mqtt_gate::app::{discovery, mqtt_handler};
+use mqtt_gate::physical;
 use mqtt_gate::infra::config::AppConfig;
 use mqtt_gate::infra::{
     dhcp_server, mqtt_client, provisioning_http, reset_button, storage, wifi_ap, wifi_sta,
@@ -78,26 +78,39 @@ async fn main(spawner: Spawner) -> ! {
     // all take a `&mut FlashStorage` rather than constructing their own.
     let mut flash = FlashStorage::new(peripherals.FLASH);
 
+    let mut boot_button = esp_hal::gpio::Input::new(
+        peripherals.GPIO0.degrade(),
+        esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up),
+    );
+
     // GPIO0 = onboard "BOOT" button on most ESP32 devkits. Held for 5s at boot,
     // this clears the stored config and drops the device back into provisioning mode.
-    reset_button::check_and_maybe_erase(peripherals.GPIO0, &mut flash).await;
+    reset_button::check_and_maybe_erase(&mut boot_button, &mut flash).await;
 
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
-    let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
-    let ble_controller = ExternalController::<_, 1>::new(transport);
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
-    let _stack = trouble_host::new(ble_controller, &mut resources);
+    //let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
+    //let ble_controller = ExternalController::<_, 1>::new(transport);
+    //let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
+    //    HostResources::new();
+    //let _stack = trouble_host::new(ble_controller, &mut resources);
 
     let rng = esp_hal::rng::Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     match storage::load(&mut flash).await {
         Some(cfg) if !cfg.wifi_ssid.is_empty() => {
-            run_station_mode(spawner, &mut wifi_controller, interfaces.station, cfg, seed).await;
+            run_station_mode(
+                spawner,
+                &mut wifi_controller,
+                interfaces.station,
+                cfg,
+                seed,
+                boot_button,
+            )
+            .await;
         }
         _ => {
             run_provisioning_mode(
@@ -172,6 +185,7 @@ async fn run_station_mode(
     interface: Interface<'static>,
     cfg: AppConfig,
     seed: u64,
+    boot_button: esp_hal::gpio::Input<'static>,
 ) -> ! {
     info!("Joining Wi-Fi network {:?}", cfg.wifi_ssid);
 
@@ -196,6 +210,8 @@ async fn run_station_mode(
 
     spawner.spawn(mqtt_client::task(stack, cfg).unwrap());
     spawner.spawn(mqtt_handler::task().unwrap());
+    spawner.spawn(discovery::task().unwrap());
+    spawner.spawn(physical::button::task(boot_button).unwrap());
 
     loop {
         info!("Hello world!");

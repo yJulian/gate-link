@@ -20,3 +20,4 @@ macro_rules! mk_static {
 
 pub mod app;
 pub mod infra;
+pub mod physical;

@@ -132,6 +132,7 @@ where
         topic: &'p str,
         payload: &'p [u8],
         qos: QoS,
+        retain: bool,
     ) -> Result<(), MqttError<T::Error>>
     where
         T::Error: transport::TransportError,
@@ -144,10 +145,29 @@ where
         let publish_packet = Publish {
             topic,
             qos,
+            retain,
             payload,
             packet_id,
         };
         self._send_packet(publish_packet).await
+    }
+
+    /// Subscribes to a topic.
+    pub async fn subscribe<'p>(
+        &mut self,
+        topic: &'p str,
+        qos: QoS,
+    ) -> Result<(), MqttError<T::Error>>
+    where
+        T::Error: transport::TransportError,
+    {
+        let mut topics = heapless::Vec::new();
+        topics.push((topic, qos)).map_err(|_| MqttError::BufferTooSmall)?;
+        let subscribe_packet = packet::Subscribe {
+            packet_id: self.get_next_packet_id(),
+            topics,
+        };
+        self._send_packet(subscribe_packet).await
     }
 
     /// Sends a pre-constructed packet over the transport.
