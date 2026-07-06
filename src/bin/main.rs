@@ -87,6 +87,21 @@ async fn main(spawner: Spawner) -> ! {
     // this clears the stored config and drops the device back into provisioning mode.
     reset_button::check_and_maybe_erase(&mut boot_button, &mut flash).await;
 
+    // --- Gate relay wiring - change the GPIO numbers and durations to match your setup ---
+    const LEFT_MOTOR_DURATION_SECS: u8 = 15;
+    const RIGHT_MOTOR_DURATION_SECS: u8 = 15;
+
+    let left_motor_settings = physical::gate::MotorSettings {
+        open_pin: peripherals.GPIO25.degrade(),
+        close_pin: peripherals.GPIO26.degrade(),
+        duration: LEFT_MOTOR_DURATION_SECS,
+    };
+    let right_motor_settings = physical::gate::MotorSettings {
+        open_pin: peripherals.GPIO27.degrade(),
+        close_pin: peripherals.GPIO14.degrade(),
+        duration: RIGHT_MOTOR_DURATION_SECS,
+    };
+
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
@@ -109,6 +124,8 @@ async fn main(spawner: Spawner) -> ! {
                 cfg,
                 seed,
                 boot_button,
+                left_motor_settings,
+                right_motor_settings,
             )
             .await;
         }
@@ -179,6 +196,10 @@ async fn run_provisioning_mode(
     clippy::large_stack_frames,
     reason = "constructing StackResources<4> briefly puts it on the stack before mk_static! moves it into a StaticCell"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is a distinct peripheral/config handle threaded through from main; grouping them would just add an intermediate struct with no behavior of its own"
+)]
 async fn run_station_mode(
     spawner: Spawner,
     controller: &mut esp_radio::wifi::WifiController<'static>,
@@ -186,6 +207,8 @@ async fn run_station_mode(
     cfg: AppConfig,
     seed: u64,
     boot_button: esp_hal::gpio::Input<'static>,
+    left_motor_settings: physical::gate::MotorSettings,
+    right_motor_settings: physical::gate::MotorSettings,
 ) -> ! {
     info!("Joining Wi-Fi network {:?}", cfg.wifi_ssid);
 
@@ -212,6 +235,7 @@ async fn run_station_mode(
     spawner.spawn(mqtt_handler::task().unwrap());
     spawner.spawn(discovery::task().unwrap());
     spawner.spawn(physical::button::task(boot_button).unwrap());
+    spawner.spawn(physical::gate::task(left_motor_settings, right_motor_settings).unwrap());
 
     loop {
         info!("Hello world!");
