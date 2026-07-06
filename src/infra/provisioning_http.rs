@@ -14,7 +14,7 @@ use picoserve::response::Content;
 use picoserve::routing::get;
 use picoserve::{AppBuilder, AppRouter, Router};
 
-use crate::config::{AppConfig, SubmittedForm};
+use crate::infra::config::{AppConfig, SubmittedForm};
 
 /// Set once a valid form submission has been persisted; `main()` waits on this to
 /// know when to reboot into station mode.

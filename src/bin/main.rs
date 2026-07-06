@@ -17,11 +17,12 @@ use esp_radio::ble::controller::BleConnector;
 use esp_radio::wifi::Interface;
 use esp_storage::FlashStorage;
 use log::{error, info};
-use mqtt_gate::config::AppConfig;
-use mqtt_gate::mk_static;
-use mqtt_gate::{
+use mqtt_gate::app::mqtt_handler;
+use mqtt_gate::infra::config::AppConfig;
+use mqtt_gate::infra::{
     dhcp_server, mqtt_client, provisioning_http, reset_button, storage, wifi_ap, wifi_sta,
 };
+use mqtt_gate::mk_static;
 use picoserve::AppBuilder as _;
 use trouble_host::prelude::*;
 
@@ -194,6 +195,7 @@ async fn run_station_mode(
     info!("Network is up");
 
     spawner.spawn(mqtt_client::task(stack, cfg).unwrap());
+    spawner.spawn(mqtt_handler::task().unwrap());
 
     loop {
         info!("Hello world!");

@@ -37,6 +37,7 @@ esp-println = { version = "0.17.0", features = ["esp32", "log-04"] }
 # for more networking protocol support see https://crates.io/crates/edge-net
 bt-hci = "0.8.0"
 embassy-executor = { version = "0.10.0", features = ["log"] }
+embassy-futures = "0.1.2"
 embassy-time = { version = "0.5.0", features = ["log"] }
 esp-radio = { version = "0.18.0", features = [
   "ble",
@@ -76,6 +77,7 @@ embassy-embedded-hal = "0.6.0"
 sequential-storage   = { version = "7.2.0", features = ["postcard"] }
 postcard             = { version = "1", default-features = false }
 serde                = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json           = { version = "1", default-features = false, features = ["alloc"] }
 
 # Provisioning HTTP server + AP-mode DHCP server
 picoserve        = { version = "0.18.0", features = ["alloc", "embassy"] }

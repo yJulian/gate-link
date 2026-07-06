@@ -11,7 +11,7 @@ use edge_nal_embassy::{Udp, UdpBuffers};
 use embassy_net::Stack;
 use embassy_time::Instant;
 
-use crate::wifi_ap::AP_IP_OCTETS;
+use crate::infra::wifi_ap::AP_IP_OCTETS;
 
 /// Max simultaneously leased clients; the provisioning hotspot only ever expects one.
 const MAX_LEASES: usize = 4;

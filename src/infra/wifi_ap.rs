@@ -1,6 +1,6 @@
 //! Provisioning-mode Wi-Fi access point: open (passwordless) hotspot with a static
-//! IP, serving the config form (`crate::provisioning_http`) and a small DHCP server
-//! (`crate::dhcp_server`) for joining clients.
+//! IP, serving the config form (`crate::infra::provisioning_http`) and a small DHCP server
+//! (`crate::infra::dhcp_server`) for joining clients.
 
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, StaticConfigV4};
 use esp_radio::wifi::ap::AccessPointConfig;

@@ -11,7 +11,7 @@ const HOLD_MS: u64 = 5000;
 const POLL_INTERVAL_MS: u64 = 50;
 
 /// Samples `pin` (active-low, e.g. the onboard BOOT button on most ESP32 devkits) and,
-/// if held continuously for [`HOLD_MS`], erases the stored config via `crate::storage::erase`.
+/// if held continuously for [`HOLD_MS`], erases the stored config via `crate::infra::storage::erase`.
 ///
 /// Call this once at the very start of `main()`, before any Wi-Fi/network init, so an
 /// erase-then-reboot-into-AP-mode happens within the same boot cycle.
@@ -22,7 +22,7 @@ pub async fn check_and_maybe_erase(pin: impl InputPin, flash: &mut FlashStorage<
     while button.is_low() {
         if Instant::now() - start >= Duration::from_millis(HOLD_MS) {
             log::warn!("Reset button held {HOLD_MS}ms - erasing stored config");
-            if let Err(err) = crate::storage::erase(flash).await {
+            if let Err(err) = crate::infra::storage::erase(flash).await {
                 log::error!("Failed to erase stored config: {err:?}");
             }
             return;

@@ -5,7 +5,7 @@ use embassy_net::{Config, DhcpConfig};
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{self, AuthenticationMethod, WifiController, WifiError};
 
-use crate::config::AppConfig;
+use crate::infra::config::AppConfig;
 
 /// Puts the Wi-Fi radio into station mode using the persisted SSID/password.
 ///

@@ -18,11 +18,5 @@ macro_rules! mk_static {
     }};
 }
 
-pub mod config;
-pub mod dhcp_server;
-pub mod mqtt_client;
-pub mod provisioning_http;
-pub mod reset_button;
-pub mod storage;
-pub mod wifi_ap;
-pub mod wifi_sta;
+pub mod app;
+pub mod infra;

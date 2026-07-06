@@ -1,6 +1,6 @@
 //! Provisioned device configuration: Wi-Fi credentials and MQTT broker settings,
-//! persisted to flash (see `crate::storage`) and collected via the provisioning
-//! HTTP form (see `crate::provisioning_http`) when none is stored yet.
+//! persisted to flash (see `crate::infra::storage`) and collected via the provisioning
+//! HTTP form (see `crate::infra::provisioning_http`) when none is stored yet.
 
 use alloc::string::String;
 use serde::{Deserialize, Serialize};

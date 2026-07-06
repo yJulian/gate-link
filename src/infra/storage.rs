@@ -15,7 +15,7 @@ use esp_storage::FlashStorage;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{MapConfig, MapStorage};
 
-use crate::config::AppConfig;
+use crate::infra::config::AppConfig;
 
 const CONFIG_KEY: u8 = 1;
 /// Large enough to cover our whole (4-entry) partition table; doesn't need to reach
