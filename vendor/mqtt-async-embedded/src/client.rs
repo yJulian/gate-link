@@ -162,7 +162,9 @@ where
         T::Error: transport::TransportError,
     {
         let mut topics = heapless::Vec::new();
-        topics.push((topic, qos)).map_err(|_| MqttError::BufferTooSmall)?;
+        topics
+            .push((topic, qos))
+            .map_err(|_| MqttError::BufferTooSmall)?;
         let subscribe_packet = packet::Subscribe {
             packet_id: self.get_next_packet_id(),
             topics,

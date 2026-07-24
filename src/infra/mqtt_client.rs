@@ -14,10 +14,10 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::net::IpAddr;
 use core::cell::RefCell;
+use core::net::IpAddr;
 
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpEndpoint, Stack};
@@ -65,8 +65,10 @@ pub struct Subscription {
     pub qos: QoS,
 }
 
-static SUBSCRIPTIONS: embassy_sync::blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<Vec<Subscription>>> =
-    embassy_sync::blocking_mutex::Mutex::new(RefCell::new(Vec::new()));
+static SUBSCRIPTIONS: embassy_sync::blocking_mutex::Mutex<
+    CriticalSectionRawMutex,
+    RefCell<Vec<Subscription>>,
+> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(Vec::new()));
 
 static SUB_QUEUE: Channel<CriticalSectionRawMutex, Subscription, QUEUE_DEPTH> = Channel::new();
 
@@ -199,7 +201,12 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
     }
 
     loop {
-        match select(client.poll(), select(OUTGOING.receive(), SUB_QUEUE.receive())).await {
+        match select(
+            client.poll(),
+            select(OUTGOING.receive(), SUB_QUEUE.receive()),
+        )
+        .await
+        {
             Either::First(poll_result) => {
                 if let Some(MqttEvent::Publish(p)) =
                     poll_result.map_err(|_| "MQTT connection error")?

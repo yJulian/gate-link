@@ -1,3 +1,3 @@
 pub mod gate;
-pub mod button;
+pub mod inputs;
 mod motor;

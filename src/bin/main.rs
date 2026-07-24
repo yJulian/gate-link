@@ -11,20 +11,19 @@ use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::Pin;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::Interface;
 use esp_storage::FlashStorage;
-use esp_hal::gpio::Pin;
 use log::{error, info};
 use mqtt_gate::app::{discovery, mqtt_handler};
-use mqtt_gate::physical;
 use mqtt_gate::infra::config::AppConfig;
 use mqtt_gate::infra::{
     dhcp_server, mqtt_client, provisioning_http, reset_button, storage, wifi_ap, wifi_sta,
 };
 use mqtt_gate::mk_static;
+use mqtt_gate::physical;
 use picoserve::AppBuilder as _;
-use trouble_host::prelude::*;
 
 #[panic_handler]
 fn panic(panic_info: &core::panic::PanicInfo) -> ! {
@@ -33,9 +32,6 @@ fn panic(panic_info: &core::panic::PanicInfo) -> ! {
 }
 
 extern crate alloc;
-
-const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -63,7 +59,6 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 98768);
-    // COEX needs more RAM - so we've added some more
     esp_alloc::heap_allocator!(size: 64 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -73,10 +68,13 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    // `FlashStorage::new` panics if called more than once, so this is the one and
-    // only instance for the whole program's lifetime; `storage::{load,save,erase}`
-    // all take a `&mut FlashStorage` rather than constructing their own.
-    let mut flash = FlashStorage::new(peripherals.FLASH);
+    // `FlashStorage::new` panics if called more than once, so this is promoted to
+    // a `&'static mut` up front and threaded through as the one and only instance
+    // for the whole program's lifetime - `storage::{load,save,erase,load_gate_state,
+    // save_gate_state}` all take a `&mut FlashStorage` rather than constructing
+    // their own, and the gate task holds onto it for the rest of station mode to
+    // persist position/wind-lock state on every stop.
+    let flash = mk_static!(FlashStorage<'static>, FlashStorage::new(peripherals.FLASH));
 
     let mut boot_button = esp_hal::gpio::Input::new(
         peripherals.GPIO0.degrade(),
@@ -85,45 +83,64 @@ async fn main(spawner: Spawner) -> ! {
 
     // GPIO0 = onboard "BOOT" button on most ESP32 devkits. Held for 5s at boot,
     // this clears the stored config and drops the device back into provisioning mode.
-    reset_button::check_and_maybe_erase(&mut boot_button, &mut flash).await;
+    reset_button::check_and_maybe_erase(&mut boot_button, flash).await;
 
-    // --- Gate relay wiring - change the GPIO numbers and durations to match your setup ---
+    // --- Gate wiring - change the GPIO numbers, durations and input polarity to
+    // match your setup. All inputs below are active-low with an internal pull-up,
+    // same as the BOOT button above. ---
     const LEFT_MOTOR_DURATION_SECS: u8 = 15;
     const RIGHT_MOTOR_DURATION_SECS: u8 = 15;
 
-    let left_motor_settings = physical::gate::MotorSettings {
-        open_pin: peripherals.GPIO25.degrade(),
-        close_pin: peripherals.GPIO26.degrade(),
-        duration: LEFT_MOTOR_DURATION_SECS,
-    };
-    let right_motor_settings = physical::gate::MotorSettings {
-        open_pin: peripherals.GPIO27.degrade(),
-        close_pin: peripherals.GPIO14.degrade(),
-        duration: RIGHT_MOTOR_DURATION_SECS,
-    };
+    fn pulled_up_input(pin: esp_hal::gpio::AnyPin<'static>) -> esp_hal::gpio::Input<'static> {
+        esp_hal::gpio::Input::new(
+            pin,
+            esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up),
+        )
+    }
+
+    let push_button = pulled_up_input(peripherals.GPIO4.degrade());
+    let radio_button = pulled_up_input(peripherals.GPIO13.degrade());
+    let wind_sensor = pulled_up_input(peripherals.GPIO16.degrade());
+    let wind_reset = pulled_up_input(peripherals.GPIO17.degrade());
+    let light_barrier1 = pulled_up_input(peripherals.GPIO18.degrade());
+    let light_barrier2 = pulled_up_input(peripherals.GPIO19.degrade());
 
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
-    // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
-    //let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
-    //let ble_controller = ExternalController::<_, 1>::new(transport);
-    //let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-    //    HostResources::new();
-    //let _stack = trouble_host::new(ble_controller, &mut resources);
 
     let rng = esp_hal::rng::Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
-    match storage::load(&mut flash).await {
+    match storage::load(flash).await {
         Some(cfg) if !cfg.wifi_ssid.is_empty() => {
+            let gate_state = storage::load_gate_state(flash).await.unwrap_or_default();
+            let left_motor_settings = physical::gate::MotorSettings {
+                open_pin: peripherals.GPIO25.degrade(),
+                close_pin: peripherals.GPIO26.degrade(),
+                duration: LEFT_MOTOR_DURATION_SECS,
+                initial_position: gate_state.left_position,
+            };
+            let right_motor_settings = physical::gate::MotorSettings {
+                open_pin: peripherals.GPIO27.degrade(),
+                close_pin: peripherals.GPIO14.degrade(),
+                duration: RIGHT_MOTOR_DURATION_SECS,
+                initial_position: gate_state.right_position,
+            };
             run_station_mode(
                 spawner,
                 &mut wifi_controller,
                 interfaces.station,
                 cfg,
                 seed,
-                boot_button,
+                push_button,
+                radio_button,
+                wind_sensor,
+                wind_reset,
+                light_barrier1,
+                light_barrier2,
+                flash,
+                gate_state.wind_locked,
                 left_motor_settings,
                 right_motor_settings,
             )
@@ -134,7 +151,7 @@ async fn main(spawner: Spawner) -> ! {
                 spawner,
                 &mut wifi_controller,
                 interfaces.access_point,
-                &mut flash,
+                flash,
                 seed,
             )
             .await;
@@ -206,7 +223,14 @@ async fn run_station_mode(
     interface: Interface<'static>,
     cfg: AppConfig,
     seed: u64,
-    boot_button: esp_hal::gpio::Input<'static>,
+    push_button: esp_hal::gpio::Input<'static>,
+    radio_button: esp_hal::gpio::Input<'static>,
+    wind_sensor: esp_hal::gpio::Input<'static>,
+    wind_reset: esp_hal::gpio::Input<'static>,
+    light_barrier1: esp_hal::gpio::Input<'static>,
+    light_barrier2: esp_hal::gpio::Input<'static>,
+    flash: &'static mut FlashStorage<'static>,
+    wind_locked: bool,
     left_motor_settings: physical::gate::MotorSettings,
     right_motor_settings: physical::gate::MotorSettings,
 ) -> ! {
@@ -234,8 +258,24 @@ async fn run_station_mode(
     spawner.spawn(mqtt_client::task(stack, cfg).unwrap());
     spawner.spawn(mqtt_handler::task().unwrap());
     spawner.spawn(discovery::task().unwrap());
-    spawner.spawn(physical::button::task(boot_button).unwrap());
-    spawner.spawn(physical::gate::task(left_motor_settings, right_motor_settings).unwrap());
+    spawner.spawn(physical::inputs::edge_task(push_button, physical::gate::impulse).unwrap());
+    spawner.spawn(physical::inputs::edge_task(radio_button, physical::gate::impulse).unwrap());
+    spawner.spawn(physical::inputs::edge_task(wind_sensor, physical::gate::wind_trigger).unwrap());
+    spawner
+        .spawn(physical::inputs::edge_task(wind_reset, physical::gate::reset_wind_lock).unwrap());
+    spawner
+        .spawn(physical::inputs::level_task(light_barrier1, physical::gate::barrier1_set).unwrap());
+    spawner
+        .spawn(physical::inputs::level_task(light_barrier2, physical::gate::barrier2_set).unwrap());
+    spawner.spawn(
+        physical::gate::task(
+            left_motor_settings,
+            right_motor_settings,
+            flash,
+            wind_locked,
+        )
+        .unwrap(),
+    );
 
     loop {
         info!("Hello world!");

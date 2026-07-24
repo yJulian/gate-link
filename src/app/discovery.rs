@@ -1,22 +1,20 @@
-//! Publishes Home Assistant MQTT Discovery configs so the gate, its contact
-//! sensor and the impulse button show up as entities without manual YAML.
+//! Publishes Home Assistant MQTT Discovery configs so the gate, its wind
+//! lock sensor and the wind-lock-reset button show up as entities without
+//! manual YAML.
 //!
 //! <https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery>
 //!
 //! Configs are published retained: Home Assistant (or a broker restart) only
-//! has to see them once, not exactly at device boot. State/command topics are
-//! not wired to any hardware yet — publishing these configs is only the
-//! discovery half; nothing currently drives the cover or button (see
-//! `crate::infra::mqtt_client` and `crate::app::mqtt_handler`).
+//! has to see them once, not exactly at device boot. The actual state/command
+//! wiring lives in `crate::physical::gate` and `crate::app::mqtt_handler`.
 
 use alloc::vec::Vec;
 
 use mqtt_async_embedded::packet::QoS;
 use serde::Serialize;
 
-use crate::infra::mqtt_client;
 use crate::app::mqtt_topics::*;
-
+use crate::infra::mqtt_client;
 
 #[derive(Serialize, Clone, Copy)]
 struct Device {
@@ -98,25 +96,31 @@ pub async fn publish_all() {
     };
     publish_config(COVER_CONFIG_TOPIC, serde_json::to_vec(&cover).unwrap()).await;
 
-    let contact = BinarySensorConfig {
-        name: "Taster",
-        unique_id: "mqtt_gate_contact",
-        device_class: "garage_door",
-        state_topic: CONTACT_STATE_TOPIC,
-        payload_on: "ON",
-        payload_off: "OFF",
+    let wind = BinarySensorConfig {
+        name: "Windwächter",
+        unique_id: "mqtt_gate_wind",
+        device_class: "safety",
+        state_topic: WIND_STATE_TOPIC,
+        payload_on: ON_PAYLOAD,
+        payload_off: OFF_PAYLOAD,
         device: DEVICE,
     };
-    publish_config(CONTACT_CONFIG_TOPIC, serde_json::to_vec(&contact).unwrap()).await;
+    publish_config(WIND_CONFIG_TOPIC, serde_json::to_vec(&wind).unwrap()).await;
 
+    // Clears the wind lock (see `physical::gate::reset_wind_lock`) without
+    // commanding any gate movement itself.
     let reset_anemometer = ButtonConfig {
-        name: "Impuls",
+        name: "Windwächter zurücksetzen",
         unique_id: "mqtt_gate_reset_anemometer",
         command_topic: BUTTON_COMMAND_TOPIC,
-        payload_press: "reset_anemometer",
+        payload_press: RESET_WIND_LOCK_PAYLOAD,
         device: DEVICE,
     };
-    publish_config(BUTTON_CONFIG_TOPIC, serde_json::to_vec(&reset_anemometer).unwrap()).await;
+    publish_config(
+        BUTTON_CONFIG_TOPIC,
+        serde_json::to_vec(&reset_anemometer).unwrap(),
+    )
+    .await;
 }
 
 #[embassy_executor::task]
