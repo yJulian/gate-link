@@ -1,12 +1,8 @@
-# mqtt_gate
+# Gate Link
 
-ESP32 firmware for a two-leaf gate controller (sliding/swing gate driven by
-two 24V relay-controlled motors), exposed to [Home Assistant](https://www.home-assistant.io/)
-over MQTT with [MQTT Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) —
-no manual YAML entity setup needed.
+ESP32 firmware for a two-leaf gate controller, exposed to [Home Assistant](https://www.home-assistant.io/) over MQTT with [MQTT Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery). No manual YAML entity setup needed.
 
-`no_std` Rust on the [Embassy](https://embassy.dev/) async executor (via
-`esp-rtos`), targeting `xtensa-esp32-none-elf`.
+`no_std` Rust on the [Embassy](https://embassy.dev/) async executor (via `esp-rtos`), targeting `xtensa-esp32-none-elf`.
 
 ## Features
 
