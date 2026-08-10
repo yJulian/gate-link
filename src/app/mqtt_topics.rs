@@ -7,6 +7,10 @@ pub(crate) const COVER_STATE_TOPIC: &str = "mqtt_gate/cover/state";
 pub(crate) const WIND_CONFIG_TOPIC: &str = "homeassistant/binary_sensor/mqtt_gate_wind/config";
 pub(crate) const WIND_STATE_TOPIC: &str = "mqtt_gate/wind/state";
 
+pub(crate) const SPARE_INPUT_CONFIG_TOPIC: &str =
+    "homeassistant/binary_sensor/mqtt_gate_spare_input/config";
+pub(crate) const SPARE_INPUT_STATE_TOPIC: &str = "mqtt_gate/spare_input/state";
+
 pub(crate) const BUTTON_CONFIG_TOPIC: &str = "homeassistant/button/mqtt_gate_impulse/config";
 pub(crate) const BUTTON_COMMAND_TOPIC: &str = "mqtt_gate/impulse/set";
 pub(crate) const RESET_WIND_LOCK_PAYLOAD: &str = "reset_anemometer";

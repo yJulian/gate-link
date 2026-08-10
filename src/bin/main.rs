@@ -98,12 +98,15 @@ async fn main(spawner: Spawner) -> ! {
         )
     }
 
-    let push_button = pulled_up_input(peripherals.GPIO4.degrade());
-    let radio_button = pulled_up_input(peripherals.GPIO13.degrade());
-    let wind_sensor = pulled_up_input(peripherals.GPIO16.degrade());
-    let wind_reset = pulled_up_input(peripherals.GPIO17.degrade());
-    let light_barrier1 = pulled_up_input(peripherals.GPIO18.degrade());
-    let light_barrier2 = pulled_up_input(peripherals.GPIO19.degrade());
+    let push_button = pulled_up_input(peripherals.GPIO22.degrade());
+    let radio_button = pulled_up_input(peripherals.GPIO23.degrade());
+    let wind_sensor = pulled_up_input(peripherals.GPIO25.degrade());
+    let wind_reset = pulled_up_input(peripherals.GPIO26.degrade());
+    let light_barrier1 = pulled_up_input(peripherals.GPIO27.degrade());
+    let light_barrier2 = pulled_up_input(peripherals.GPIO16.degrade());
+    // Unused by any gate function on this board revision - published to MQTT
+    // 1:1 on every level change instead.
+    let spare_input = pulled_up_input(peripherals.GPIO17.degrade());
 
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default())
@@ -116,14 +119,14 @@ async fn main(spawner: Spawner) -> ! {
         Some(cfg) if !cfg.wifi_ssid.is_empty() => {
             let gate_state = storage::load_gate_state(flash).await.unwrap_or_default();
             let left_motor_settings = physical::gate::MotorSettings {
-                open_pin: peripherals.GPIO25.degrade(),
-                close_pin: peripherals.GPIO26.degrade(),
+                open_pin: peripherals.GPIO5.degrade(),
+                close_pin: peripherals.GPIO18.degrade(),
                 duration: LEFT_MOTOR_DURATION_SECS,
                 initial_position: gate_state.left_position,
             };
             let right_motor_settings = physical::gate::MotorSettings {
-                open_pin: peripherals.GPIO27.degrade(),
-                close_pin: peripherals.GPIO14.degrade(),
+                open_pin: peripherals.GPIO19.degrade(),
+                close_pin: peripherals.GPIO21.degrade(),
                 duration: RIGHT_MOTOR_DURATION_SECS,
                 initial_position: gate_state.right_position,
             };
@@ -139,6 +142,7 @@ async fn main(spawner: Spawner) -> ! {
                 wind_reset,
                 light_barrier1,
                 light_barrier2,
+                spare_input,
                 flash,
                 gate_state.wind_locked,
                 left_motor_settings,
@@ -229,6 +233,7 @@ async fn run_station_mode(
     wind_reset: esp_hal::gpio::Input<'static>,
     light_barrier1: esp_hal::gpio::Input<'static>,
     light_barrier2: esp_hal::gpio::Input<'static>,
+    spare_input: esp_hal::gpio::Input<'static>,
     flash: &'static mut FlashStorage<'static>,
     wind_locked: bool,
     left_motor_settings: physical::gate::MotorSettings,
@@ -267,6 +272,7 @@ async fn run_station_mode(
         .spawn(physical::inputs::level_task(light_barrier1, physical::gate::barrier1_set).unwrap());
     spawner
         .spawn(physical::inputs::level_task(light_barrier2, physical::gate::barrier2_set).unwrap());
+    spawner.spawn(physical::inputs::spare_input_task(spare_input).unwrap());
     spawner.spawn(
         physical::gate::task(
             left_motor_settings,

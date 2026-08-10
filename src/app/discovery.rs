@@ -54,7 +54,8 @@ struct CoverConfig {
 struct BinarySensorConfig {
     name: &'static str,
     unique_id: &'static str,
-    device_class: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_class: Option<&'static str>,
     state_topic: &'static str,
     payload_on: &'static str,
     payload_off: &'static str,
@@ -99,13 +100,30 @@ pub async fn publish_all() {
     let wind = BinarySensorConfig {
         name: "Windwächter",
         unique_id: "mqtt_gate_wind",
-        device_class: "safety",
+        device_class: Some("safety"),
         state_topic: WIND_STATE_TOPIC,
         payload_on: ON_PAYLOAD,
         payload_off: OFF_PAYLOAD,
         device: DEVICE,
     };
     publish_config(WIND_CONFIG_TOPIC, serde_json::to_vec(&wind).unwrap()).await;
+
+    // Unassigned input on this board revision - just mirrored to MQTT 1:1 by
+    // `physical::inputs::spare_input_task`, no gate behavior attached.
+    let spare_input = BinarySensorConfig {
+        name: "Reserve-Eingang",
+        unique_id: "mqtt_gate_spare_input",
+        device_class: None,
+        state_topic: SPARE_INPUT_STATE_TOPIC,
+        payload_on: ON_PAYLOAD,
+        payload_off: OFF_PAYLOAD,
+        device: DEVICE,
+    };
+    publish_config(
+        SPARE_INPUT_CONFIG_TOPIC,
+        serde_json::to_vec(&spare_input).unwrap(),
+    )
+    .await;
 
     // Clears the wind lock (see `physical::gate::reset_wind_lock`) without
     // commanding any gate movement itself.
