@@ -9,26 +9,31 @@
 
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::Pin;
+use esp_hal::gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pin, Pull};
 use esp_hal::timer::timg::TimerGroup;
-use esp_radio::wifi::Interface;
+use esp_radio::wifi::{Interface, WifiController};
 use esp_storage::FlashStorage;
 use log::{error, info};
 use mqtt_gate::app::{discovery, mqtt_handler};
 use mqtt_gate::infra::config::AppConfig;
+use mqtt_gate::infra::storage::SharedFlash;
 use mqtt_gate::infra::{
     dhcp_server, mqtt_client, provisioning_http, reset_button, storage, wifi_ap, wifi_sta,
 };
 use mqtt_gate::mk_static;
-use mqtt_gate::physical;
+use mqtt_gate::physical::{self, gate_config};
 use picoserve::AppBuilder as _;
 
 #[panic_handler]
 fn panic(panic_info: &core::panic::PanicInfo) -> ! {
     error!("{}", panic_info);
-    loop {}
+    // Reboot rather than hang: a hung controller ignores the push button and
+    // the light barriers until someone power-cycles it. The relays are driven
+    // low again first thing on boot.
+    esp_hal::system::software_reset()
 }
 
 extern crate alloc;
@@ -42,6 +47,22 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, Interface<'static>>) -> ! {
     runner.run().await
+}
+
+fn relay_output(pin: AnyPin<'static>) -> Output<'static> {
+    Output::new(pin, Level::Low, OutputConfig::default())
+}
+
+fn pulled_up_input(pin: AnyPin<'static>) -> Input<'static> {
+    Input::new(pin, InputConfig::default().with_pull(Pull::Up))
+}
+
+/// Keeps a mode function alive (and with it whatever it owns, e.g. the Wi-Fi
+/// controller) once all its work has been handed off to spawned tasks.
+async fn idle_forever() -> ! {
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
+    }
 }
 
 #[allow(
@@ -58,6 +79,18 @@ async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
+    // --- Gate wiring - change the GPIO numbers to match your setup. Timing
+    // (run times, per-leaf initial delays) lives in `physical::gate_config`. ---
+    //
+    // Relay outputs come first, before anything else, so the motors are
+    // guaranteed off as early as possible after reset. Avoid strapping pins
+    // (GPIO0/2/5/12/15) here: GPIO5 e.g. is pulled high and toggled by the
+    // boot ROM, which would briefly energize a relay on every reset.
+    let leaf_a_open = relay_output(peripherals.GPIO4.degrade());
+    let leaf_a_close = relay_output(peripherals.GPIO18.degrade());
+    let leaf_b_open = relay_output(peripherals.GPIO19.degrade());
+    let leaf_b_close = relay_output(peripherals.GPIO21.degrade());
+
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 98768);
     esp_alloc::heap_allocator!(size: 64 * 1024);
 
@@ -68,36 +101,26 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    // `FlashStorage::new` panics if called more than once, so this is promoted to
-    // a `&'static mut` up front and threaded through as the one and only instance
-    // for the whole program's lifetime - `storage::{load,save,erase,load_gate_state,
-    // save_gate_state}` all take a `&mut FlashStorage` rather than constructing
-    // their own, and the gate task holds onto it for the rest of station mode to
-    // persist position/wind-lock state on every stop.
-    let flash = mk_static!(FlashStorage<'static>, FlashStorage::new(peripherals.FLASH));
-
-    let mut boot_button = esp_hal::gpio::Input::new(
-        peripherals.GPIO0.degrade(),
-        esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up),
+    // `FlashStorage::new` panics if called more than once, so this is the one and
+    // only instance for the whole program's lifetime, shared behind a mutex - the
+    // gate task persists position/wind-lock state through it while provisioning
+    // may concurrently need it to save the submitted config.
+    let flash = mk_static!(
+        SharedFlash,
+        Mutex::new(FlashStorage::new(peripherals.FLASH))
     );
 
     // GPIO0 = onboard "BOOT" button on most ESP32 devkits. Held for 5s at boot,
     // this clears the stored config and drops the device back into provisioning mode.
-    reset_button::check_and_maybe_erase(&mut boot_button, flash).await;
+    let mut boot_button = pulled_up_input(peripherals.GPIO0.degrade());
+    reset_button::check_and_maybe_erase(&mut boot_button, &mut *flash.lock().await).await;
 
-    // --- Gate wiring - change the GPIO numbers, durations and input polarity to
-    // match your setup. All inputs below are active-low with an internal pull-up,
-    // same as the BOOT button above. ---
-    const LEFT_MOTOR_DURATION_SECS: u8 = 15;
-    const RIGHT_MOTOR_DURATION_SECS: u8 = 15;
+    let app_config = storage::load(&mut *flash.lock().await).await;
+    let gate_state = storage::load_gate_state(&mut *flash.lock().await)
+        .await
+        .unwrap_or_default();
 
-    fn pulled_up_input(pin: esp_hal::gpio::AnyPin<'static>) -> esp_hal::gpio::Input<'static> {
-        esp_hal::gpio::Input::new(
-            pin,
-            esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up),
-        )
-    }
-
+    // All inputs are active-low with an internal pull-up, same as the BOOT button.
     let push_button = pulled_up_input(peripherals.GPIO22.degrade());
     let radio_button = pulled_up_input(peripherals.GPIO23.degrade());
     let wind_sensor = pulled_up_input(peripherals.GPIO25.degrade());
@@ -108,57 +131,58 @@ async fn main(spawner: Spawner) -> ! {
     // 1:1 on every level change instead.
     let spare_input = pulled_up_input(peripherals.GPIO17.degrade());
 
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(peripherals.WIFI, Default::default())
-            .expect("Failed to initialize Wi-Fi controller");
+    // Local gate control is started before - and independently of - any
+    // networking: push button, radio remote, wind guard and light barriers
+    // keep working without Wi-Fi/MQTT and even in provisioning mode.
+    let leaf_a = physical::gate::MotorSettings {
+        open_pin: leaf_a_open,
+        close_pin: leaf_a_close,
+        timing: gate_config::LEAF_A,
+        initial_position: gate_state.leaf_a_position,
+    };
+    let leaf_b = physical::gate::MotorSettings {
+        open_pin: leaf_b_open,
+        close_pin: leaf_b_close,
+        timing: gate_config::LEAF_B,
+        initial_position: gate_state.leaf_b_position,
+    };
+    spawner.spawn(physical::gate::task(leaf_a, leaf_b, flash, gate_state.wind_locked).unwrap());
+    spawner.spawn(physical::inputs::edge_task(push_button, physical::gate::impulse).unwrap());
+    spawner.spawn(physical::inputs::edge_task(radio_button, physical::gate::impulse).unwrap());
+    spawner.spawn(physical::inputs::edge_task(wind_sensor, physical::gate::wind_trigger).unwrap());
+    spawner
+        .spawn(physical::inputs::edge_task(wind_reset, physical::gate::reset_wind_lock).unwrap());
+    spawner
+        .spawn(physical::inputs::level_task(light_barrier1, physical::gate::barrier1_set).unwrap());
+    spawner
+        .spawn(physical::inputs::level_task(light_barrier2, physical::gate::barrier2_set).unwrap());
+    spawner.spawn(physical::inputs::spare_input_task(spare_input).unwrap());
+
+    let (wifi_controller, interfaces) =
+        match esp_radio::wifi::new(peripherals.WIFI, Default::default()) {
+            Ok(wifi) => wifi,
+            Err(err) => {
+                error!("Failed to initialize Wi-Fi controller: {err:?} - local control only");
+                idle_forever().await
+            }
+        };
 
     let rng = esp_hal::rng::Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
-    match storage::load(flash).await {
+    match app_config {
         Some(cfg) if !cfg.wifi_ssid.is_empty() => {
-            let gate_state = storage::load_gate_state(flash).await.unwrap_or_default();
-            let left_motor_settings = physical::gate::MotorSettings {
-                open_pin: peripherals.GPIO5.degrade(),
-                close_pin: peripherals.GPIO18.degrade(),
-                duration: LEFT_MOTOR_DURATION_SECS,
-                initial_position: gate_state.left_position,
-            };
-            let right_motor_settings = physical::gate::MotorSettings {
-                open_pin: peripherals.GPIO19.degrade(),
-                close_pin: peripherals.GPIO21.degrade(),
-                duration: RIGHT_MOTOR_DURATION_SECS,
-                initial_position: gate_state.right_position,
-            };
-            run_station_mode(
-                spawner,
-                &mut wifi_controller,
-                interfaces.station,
-                cfg,
-                seed,
-                push_button,
-                radio_button,
-                wind_sensor,
-                wind_reset,
-                light_barrier1,
-                light_barrier2,
-                spare_input,
-                flash,
-                gate_state.wind_locked,
-                left_motor_settings,
-                right_motor_settings,
-            )
-            .await;
+            run_station_mode(spawner, wifi_controller, interfaces.station, cfg, seed).await
         }
         _ => {
             run_provisioning_mode(
                 spawner,
-                &mut wifi_controller,
+                wifi_controller,
                 interfaces.access_point,
                 flash,
                 seed,
             )
-            .await;
+            .await
         }
     }
 }
@@ -169,9 +193,9 @@ async fn main(spawner: Spawner) -> ! {
 )]
 async fn run_provisioning_mode(
     spawner: Spawner,
-    controller: &mut esp_radio::wifi::WifiController<'static>,
+    mut controller: WifiController<'static>,
     interface: Interface<'static>,
-    flash: &mut FlashStorage<'static>,
+    flash: &'static SharedFlash,
     seed: u64,
 ) -> ! {
     info!(
@@ -179,7 +203,10 @@ async fn run_provisioning_mode(
         wifi_ap::AP_SSID
     );
 
-    wifi_ap::configure(controller).expect("Failed to configure Wi-Fi access point");
+    if let Err(err) = wifi_ap::configure(&mut controller) {
+        error!("Failed to configure Wi-Fi access point: {err:?} - local control only");
+        idle_forever().await;
+    }
 
     let (stack, runner) = embassy_net::new(
         interface,
@@ -203,7 +230,7 @@ async fn run_provisioning_mode(
 
     let cfg = provisioning_http::CONFIG_SUBMITTED.wait().await;
 
-    match storage::save(flash, &cfg).await {
+    match storage::save(&mut *flash.lock().await, &cfg).await {
         Ok(()) => info!("Config saved - rebooting into station mode"),
         Err(err) => error!("Failed to save config: {err:?}"),
     }
@@ -217,35 +244,19 @@ async fn run_provisioning_mode(
     clippy::large_stack_frames,
     reason = "constructing StackResources<4> briefly puts it on the stack before mk_static! moves it into a StaticCell"
 )]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is a distinct peripheral/config handle threaded through from main; grouping them would just add an intermediate struct with no behavior of its own"
-)]
 async fn run_station_mode(
     spawner: Spawner,
-    controller: &mut esp_radio::wifi::WifiController<'static>,
+    mut controller: WifiController<'static>,
     interface: Interface<'static>,
     cfg: AppConfig,
     seed: u64,
-    push_button: esp_hal::gpio::Input<'static>,
-    radio_button: esp_hal::gpio::Input<'static>,
-    wind_sensor: esp_hal::gpio::Input<'static>,
-    wind_reset: esp_hal::gpio::Input<'static>,
-    light_barrier1: esp_hal::gpio::Input<'static>,
-    light_barrier2: esp_hal::gpio::Input<'static>,
-    spare_input: esp_hal::gpio::Input<'static>,
-    flash: &'static mut FlashStorage<'static>,
-    wind_locked: bool,
-    left_motor_settings: physical::gate::MotorSettings,
-    right_motor_settings: physical::gate::MotorSettings,
 ) -> ! {
     info!("Joining Wi-Fi network {:?}", cfg.wifi_ssid);
 
-    wifi_sta::configure(controller, &cfg).expect("Failed to configure Wi-Fi station");
-    controller
-        .connect_async()
-        .await
-        .expect("Failed to connect to Wi-Fi");
+    if let Err(err) = wifi_sta::configure(&mut controller, &cfg) {
+        error!("Failed to configure Wi-Fi station: {err:?} - local control only");
+        idle_forever().await;
+    }
 
     let (stack, runner) = embassy_net::new(
         interface,
@@ -254,37 +265,13 @@ async fn run_station_mode(
         seed,
     );
 
+    // None of these block anything local: Wi-Fi (re)connects in the
+    // background, and the MQTT client waits for the network on its own.
     spawner.spawn(net_task(runner).unwrap());
-
-    info!("Waiting for network...");
-    stack.wait_config_up().await;
-    info!("Network is up");
-
+    spawner.spawn(wifi_sta::connection_task(controller).unwrap());
     spawner.spawn(mqtt_client::task(stack, cfg).unwrap());
     spawner.spawn(mqtt_handler::task().unwrap());
     spawner.spawn(discovery::task().unwrap());
-    spawner.spawn(physical::inputs::edge_task(push_button, physical::gate::impulse).unwrap());
-    spawner.spawn(physical::inputs::edge_task(radio_button, physical::gate::impulse).unwrap());
-    spawner.spawn(physical::inputs::edge_task(wind_sensor, physical::gate::wind_trigger).unwrap());
-    spawner
-        .spawn(physical::inputs::edge_task(wind_reset, physical::gate::reset_wind_lock).unwrap());
-    spawner
-        .spawn(physical::inputs::level_task(light_barrier1, physical::gate::barrier1_set).unwrap());
-    spawner
-        .spawn(physical::inputs::level_task(light_barrier2, physical::gate::barrier2_set).unwrap());
-    spawner.spawn(physical::inputs::spare_input_task(spare_input).unwrap());
-    spawner.spawn(
-        physical::gate::task(
-            left_motor_settings,
-            right_motor_settings,
-            flash,
-            wind_locked,
-        )
-        .unwrap(),
-    );
 
-    loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(60)).await;
-    }
+    idle_forever().await
 }

@@ -1,15 +1,23 @@
 [target.xtensa-esp32-none-elf]
 runner = "espflash flash --monitor --chip esp32 --partition-table partitions.csv"
+rustflags = [
+  "-C", "link-arg=-nostartfiles",
+]
 
 [env]
 ESP_LOG="info"
 
 [build]
-rustflags = [
-  "-C", "link-arg=-nostartfiles",
-]
-
 target = "xtensa-esp32-none-elf"
 
 [unstable]
 build-std = ["alloc", "core"]
+
+[alias]
+# Host-side unit tests of the hardware-independent gate logic. Overrides the
+# xtensa default target, and - since `build-std` above can only be extended,
+# not cleared, from the command line - also builds `std` for the host.
+test-core = [
+  "test", "-p", "gate-core", "--target", "host-tuple",
+  "--config", 'unstable.build-std=["std", "test", "panic_unwind"]',
+]

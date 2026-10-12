@@ -10,19 +10,25 @@
 //!   place that reads from it and reacts.
 //! - Outgoing messages go through [`publish`], which just enqueues them. Any
 //!   module — now or in the future — can call it without needing access to the
-//!   socket, which stays owned by this task alone.
+//!   socket, which stays owned by this task alone. It never blocks: while the
+//!   broker is unreachable the oldest queued messages are dropped, so a dead
+//!   connection can never stall the caller (e.g. the gate control loop).
+//! - [`wait_connected`] fires after every (re)connect, so the app can
+//!   republish discovery configs and current state that may have been dropped
+//!   while offline.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::net::IpAddr;
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpEndpoint, Stack};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::channel::{Channel, TrySendError};
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use mqtt_async_embedded::client::{MqttClient, MqttEvent, MqttOptions};
@@ -35,9 +41,18 @@ const MAX_TOPICS: usize = 4;
 const MQTT_BUF_SIZE: usize = 512;
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
-/// How many messages may be queued in either direction before the producer
-/// (the broker for incoming, an app-side caller for outgoing) has to wait.
+/// How many incoming messages/subscriptions may be queued before the producer
+/// has to wait.
 const QUEUE_DEPTH: usize = 8;
+/// How many outgoing messages are buffered; beyond that the oldest is dropped.
+/// Big enough for a full republish after reconnect (discovery + state).
+const OUTGOING_DEPTH: usize = 16;
+const KEEP_ALIVE: Duration = Duration::from_secs(50);
+/// How often the connection loop wakes up to give `MqttClient::poll` a chance
+/// to send a due PINGREQ. Keep-alive + this must stay well below 1.5x keep-alive.
+const KEEP_ALIVE_CHECK: Duration = Duration::from_secs(10);
+/// A broker that stops answering for this long is treated as gone.
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// An MQTT message received from the broker, decoupled from the connection's
 /// internal receive buffer so it can be handed off across a queue.
@@ -57,7 +72,8 @@ struct OutgoingMessage {
 }
 
 static INCOMING: Channel<CriticalSectionRawMutex, IncomingMessage, QUEUE_DEPTH> = Channel::new();
-static OUTGOING: Channel<CriticalSectionRawMutex, OutgoingMessage, QUEUE_DEPTH> = Channel::new();
+static OUTGOING: Channel<CriticalSectionRawMutex, OutgoingMessage, OUTGOING_DEPTH> = Channel::new();
+static CONNECTED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[derive(Clone, Debug)]
 pub struct Subscription {
@@ -91,21 +107,33 @@ pub async fn subscribe(topic: impl Into<String>, qos: QoS) {
 ///
 /// Safe to call from any task, including ones that have nothing to do with the
 /// MQTT connection itself — this is the intended way for other modules to send
-/// MQTT messages without reaching into the socket owned by [`task`].
-pub async fn publish(
-    topic: impl Into<String>,
-    payload: impl Into<Vec<u8>>,
-    qos: QoS,
-    retain: bool,
-) {
-    OUTGOING
-        .send(OutgoingMessage {
-            topic: topic.into(),
-            payload: payload.into(),
-            qos,
-            retain,
-        })
-        .await;
+/// MQTT messages without reaching into the socket owned by [`task`]. Never
+/// blocks: if the queue is full (broker unreachable), the oldest queued
+/// message is dropped to make room.
+pub fn publish(topic: impl Into<String>, payload: impl Into<Vec<u8>>, qos: QoS, retain: bool) {
+    let mut message = OutgoingMessage {
+        topic: topic.into(),
+        payload: payload.into(),
+        qos,
+        retain,
+    };
+    loop {
+        match OUTGOING.try_send(message) {
+            Ok(()) => return,
+            Err(TrySendError::Full(rejected)) => {
+                message = rejected;
+                if let Ok(dropped) = OUTGOING.try_receive() {
+                    log::warn!("MQTT queue full - dropping message for {}", dropped.topic);
+                }
+            }
+        }
+    }
+}
+
+/// Waits until the next successful (re)connect to the broker, including
+/// re-subscription. Intended for a single task that republishes state.
+pub async fn wait_connected() {
+    CONNECTED.wait().await
 }
 
 /// Waits for the next message received from the broker.
@@ -133,7 +161,13 @@ impl MqttTransport for TcpTransport<'_> {
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.socket.read(buf).await.map_err(TcpTransportError)
+        match self.socket.read(buf).await {
+            // EOF: the broker closed the connection. Reported as an error, because
+            // `MqttClient::poll` treats `Ok(0)` as "nothing yet" and would spin on
+            // it forever without ever yielding to the executor.
+            Ok(0) => Err(TcpTransportError(embassy_net::tcp::Error::ConnectionReset)),
+            result => result.map_err(TcpTransportError),
+        }
     }
 }
 
@@ -162,6 +196,9 @@ pub async fn task(stack: Stack<'static>, cfg: AppConfig) {
 }
 
 async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static str> {
+    // Wi-Fi may be down or still reconnecting - just wait for it.
+    stack.wait_config_up().await;
+
     let ip = resolve(stack, &cfg.mqtt_host)
         .await
         .ok_or("could not resolve MQTT host")?;
@@ -169,6 +206,7 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
     let mut rx_buffer = [0u8; 1024];
     let mut tx_buffer = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+    socket.set_timeout(Some(SOCKET_TIMEOUT));
 
     socket
         .connect(IpEndpoint::new(ip.into(), cfg.mqtt_port))
@@ -178,8 +216,8 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
     let transport = TcpTransport { socket };
 
     let client_id = "mqtt_gate";
-    let mut options = MqttOptions::new(client_id, &cfg.mqtt_host, cfg.mqtt_port)
-        .with_keep_alive(Duration::from_secs(50));
+    let mut options =
+        MqttOptions::new(client_id, &cfg.mqtt_host, cfg.mqtt_port).with_keep_alive(KEEP_ALIVE);
     if let (Some(username), Some(password)) = (&cfg.mqtt_username, &cfg.mqtt_password) {
         options = options.with_credentials(username, password.as_bytes());
     }
@@ -200,14 +238,24 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
         log::info!("Re-subscribed to {}", sub.topic);
     }
 
+    // Whatever piled up while offline is stale; the app republishes the
+    // current state in response to CONNECTED.
+    while OUTGOING.try_receive().is_ok() {}
+    CONNECTED.signal(());
+
     loop {
-        match select(
+        match select3(
             client.poll(),
             select(OUTGOING.receive(), SUB_QUEUE.receive()),
+            // `poll` only sends its keep-alive PINGREQ on entry, but then sits in
+            // `recv` indefinitely on an idle connection - so re-enter it
+            // periodically, or the broker drops us after 1.5x the keep-alive.
+            Timer::after(KEEP_ALIVE_CHECK),
         )
         .await
         {
-            Either::First(poll_result) => {
+            Either3::Third(()) => {}
+            Either3::First(poll_result) => {
                 if let Some(MqttEvent::Publish(p)) =
                     poll_result.map_err(|_| "MQTT connection error")?
                 {
@@ -218,13 +266,13 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
                     INCOMING.send(message).await;
                 }
             }
-            Either::Second(Either::First(out)) => {
+            Either3::Second(Either::First(out)) => {
                 client
                     .publish(&out.topic, &out.payload, out.qos, out.retain)
                     .await
                     .map_err(|_| "MQTT publish failed")?;
             }
-            Either::Second(Either::Second(sub)) => {
+            Either3::Second(Either::Second(sub)) => {
                 client
                     .subscribe(&sub.topic, sub.qos)
                     .await

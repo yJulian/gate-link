@@ -27,6 +27,9 @@ jobs:
             args: --all -- --check
           - command: clippy
             args: --all-features --workspace -- -D warnings
+          # Host-side unit tests of gate-core (alias in .cargo/config.toml)
+          - command: test-core
+            args: ""
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6

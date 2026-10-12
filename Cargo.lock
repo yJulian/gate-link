@@ -530,6 +530,7 @@ dependencies = [
  "critical-section",
  "document-features",
  "embassy-time-driver",
+ "embassy-time-queue-utils",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -1147,6 +1148,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-core"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embedded-hal 1.0.0",
+ "log",
+]
+
+[[package]]
 name = "gcd"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1415,6 +1428,7 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "esp-storage",
+ "gate-core",
  "heapless 0.9.3",
  "log",
  "mqtt-async-embedded",

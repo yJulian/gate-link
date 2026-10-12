@@ -1,0 +1,19 @@
+[package]
+edition      = "2024"
+name         = "gate-core"
+rust-version = "1.88"
+version      = "0.1.0"
+description  = "Hardware-independent gate control logic (motor timing, leaf sequencing, safety gating), unit-tested on the host"
+
+[dependencies]
+embassy-futures = "0.1.2"
+embassy-sync    = "0.8.0"
+embassy-time    = "0.5.0"
+embedded-hal    = "1.0.0"
+log             = "0.4.27"
+
+[dev-dependencies]
+# Host-side test support: a manually advanced clock (with a timer queue that
+# accepts any waker, not just embassy-executor ones) and a std critical section.
+critical-section = { version = "1.2.0", features = ["std"] }
+embassy-time     = { version = "0.5.0", features = ["generic-queue-8", "mock-driver"] }

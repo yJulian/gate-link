@@ -3,11 +3,13 @@
 //! writes survive power loss without needing wear-leveling logic of our own.
 //!
 //! `esp_storage::FlashStorage::new` panics if constructed more than once, so callers
-//! must create exactly one `FlashStorage` at boot (see `src/bin/main.rs`) and pass a
-//! `&mut` reference into `load`/`save`/`erase` rather than each function constructing
-//! its own.
+//! must create exactly one `FlashStorage` at boot (see `src/bin/main.rs`, where it's
+//! wrapped in a [`SharedFlash`] mutex) and pass a `&mut` reference into
+//! `load`/`save`/`erase` rather than each function constructing its own.
 
 use embassy_embedded_hal::adapter::BlockingAsync;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use esp_bootloader_esp_idf::partitions::{
     self, DataPartitionSubType, PartitionEntry, PartitionType,
 };
@@ -21,12 +23,16 @@ use crate::infra::config::AppConfig;
 const CONFIG_KEY: u8 = 1;
 const GATE_STATE_KEY: u8 = 2;
 
+/// The one `FlashStorage` instance, shared between whoever needs flash at
+/// runtime (the gate task persisting its state, provisioning saving config).
+pub type SharedFlash = Mutex<CriticalSectionRawMutex, FlashStorage<'static>>;
+
 /// Gate position and wind-lock latch, persisted so a power loss doesn't lose
 /// track of where the leaves were or whether the wind lock was engaged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct GateState {
-    pub left_position: u8,
-    pub right_position: u8,
+    pub leaf_a_position: u8,
+    pub leaf_b_position: u8,
     pub wind_locked: bool,
 }
 

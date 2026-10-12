@@ -4,9 +4,11 @@
 //!
 //! <https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery>
 //!
-//! Configs are published retained: Home Assistant (or a broker restart) only
-//! has to see them once, not exactly at device boot. The actual state/command
-//! wiring lives in `crate::physical::gate` and `crate::app::mqtt_handler`.
+//! Configs are published retained, and - together with the current gate,
+//! wind-lock and spare-input state - republished after every broker
+//! (re)connect, since anything published while offline may have been dropped.
+//! The actual state/command wiring lives in `crate::physical::gate` and
+//! `crate::app::mqtt_handler`.
 
 use alloc::vec::Vec;
 
@@ -15,6 +17,7 @@ use serde::Serialize;
 
 use crate::app::mqtt_topics::*;
 use crate::infra::mqtt_client;
+use crate::physical;
 
 #[derive(Serialize, Clone, Copy)]
 struct Device {
@@ -71,15 +74,13 @@ struct ButtonConfig {
     device: Device,
 }
 
-async fn publish_config(topic: &'static str, payload: Vec<u8>) {
-    mqtt_client::publish(topic, payload, QoS::AtLeastOnce, true).await;
+fn publish_config(topic: &'static str, payload: Vec<u8>) {
+    mqtt_client::publish(topic, payload, QoS::AtLeastOnce, true);
 }
 
-/// Publishes the retained discovery config for the gate cover, its contact
-/// sensor and the impulse button. Safe to call once at startup; the broker
-/// keeps the retained messages around for Home Assistant to pick up whenever
-/// it (re)connects.
-pub async fn publish_all() {
+/// Publishes the retained discovery config for the gate cover, the wind-lock
+/// sensor, the spare input sensor and the wind-lock reset button.
+pub fn publish_all() {
     let cover = CoverConfig {
         name: "gate",
         unique_id: "mqtt_gate_cover",
@@ -95,7 +96,7 @@ pub async fn publish_all() {
         state_closing: CLOSING_STATE,
         device: DEVICE,
     };
-    publish_config(COVER_CONFIG_TOPIC, serde_json::to_vec(&cover).unwrap()).await;
+    publish_config(COVER_CONFIG_TOPIC, serde_json::to_vec(&cover).unwrap());
 
     let wind = BinarySensorConfig {
         name: "Windwächter",
@@ -106,7 +107,7 @@ pub async fn publish_all() {
         payload_off: OFF_PAYLOAD,
         device: DEVICE,
     };
-    publish_config(WIND_CONFIG_TOPIC, serde_json::to_vec(&wind).unwrap()).await;
+    publish_config(WIND_CONFIG_TOPIC, serde_json::to_vec(&wind).unwrap());
 
     // Unassigned input on this board revision - just mirrored to MQTT 1:1 by
     // `physical::inputs::spare_input_task`, no gate behavior attached.
@@ -122,8 +123,7 @@ pub async fn publish_all() {
     publish_config(
         SPARE_INPUT_CONFIG_TOPIC,
         serde_json::to_vec(&spare_input).unwrap(),
-    )
-    .await;
+    );
 
     // Clears the wind lock (see `physical::gate::reset_wind_lock`) without
     // commanding any gate movement itself.
@@ -137,11 +137,15 @@ pub async fn publish_all() {
     publish_config(
         BUTTON_CONFIG_TOPIC,
         serde_json::to_vec(&reset_anemometer).unwrap(),
-    )
-    .await;
+    );
 }
 
 #[embassy_executor::task]
-pub async fn task() {
-    publish_all().await;
+pub async fn task() -> ! {
+    loop {
+        mqtt_client::wait_connected().await;
+        publish_all();
+        physical::gate::publish_state();
+        physical::inputs::publish_spare_state();
+    }
 }
