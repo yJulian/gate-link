@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Firmware for an ESP32 that drives a two-leaf sliding/swing gate (two 24V-relay
+Firmware for an ESP32-S3 that drives a two-leaf sliding/swing gate (two 24V-relay
 motors) and exposes it to Home Assistant over MQTT (with HA MQTT Discovery).
 `no_std` Rust on Embassy (async executor via `esp-rtos`), targeting
-`xtensa-esp32-none-elf`.
+`xtensa-esp32s3-none-elf`.
 
 ## Build / lint / flash
 
@@ -33,7 +33,7 @@ assert exact relay sequences without real waiting.
 
 The toolchain is pinned via `rust-toolchain.toml` to the `esp` channel
 (installed with [`espup`](https://github.com/esp-rs/espup)), and the target
-(`xtensa-esp32-none-elf`) plus `build-std` are set in `.cargo/config.toml` —
+(`xtensa-esp32s3-none-elf`) plus `build-std` are set in `.cargo/config.toml` —
 `cargo build` with no `--target` already does the right thing. CI
 (`.github/workflows/rust_ci.yml`) runs build/fmt/clippy on `esp-rs/xtensa-toolchain`
 for every push to `main` and every PR.
@@ -148,7 +148,7 @@ firmware glue: the `static CONTROLS`, `fn()` wrappers for inputs/MQTT,
 - `set_barrier_bypass` (MQTT switch, or a press on the IN7 input) arms a
   one-shot bypass: the next movement that energizes a motor ignores both
   light barriers, then the bypass clears itself. It is never persisted.
-- `gate_core::warning_light` (own task, `LAMP_BLINK` = GPIO14) blinks while
+- `gate_core::warning_light` (own task, `LAMP_BLINK` = GPIO21) blinks while
   the gate moves (incl. initial delays) and as long as the bypass is armed.
 - After every command settles (completes or is interrupted), position and
   wind-lock state are re-derived, published to MQTT (retained), and persisted

@@ -32,7 +32,7 @@ const DEVICE: Device = Device {
     identifiers: [NODE_ID],
     name: "Gate",
     manufacturer: "mqtt_gate",
-    model: "ESP32 Gate Controller",
+    model: "ESP32-S3 Gate Controller",
     sw_version: env!("CARGO_PKG_VERSION"),
 };
 

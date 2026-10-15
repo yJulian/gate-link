@@ -72,7 +72,7 @@ async fn idle_forever() -> ! {
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
     // generator version: 1.3.0
-    // generator parameters: --chip esp32 -o alloc -o unstable-hal -o wifi -o embassy -o ble-trouble -o log -o vscode -o zed -o ci
+    // generator parameters: --chip esp32s3 -o alloc -o unstable-hal -o wifi -o embassy -o ble-trouble -o log -o vscode -o zed -o ci
 
     esp_println::logger::init_logger_from_env();
 
@@ -82,18 +82,22 @@ async fn main(spawner: Spawner) -> ! {
     // --- Gate wiring - change the GPIO numbers to match your setup. Timing
     // (run times, per-leaf initial delays) lives in `physical::gate_config`. ---
     //
+    // ESP32-S3 pins that must stay free here: strapping pins (GPIO0/3/45/46),
+    // USB D-/D+ (GPIO19/20), UART0 console (GPIO43/44), the module's
+    // flash/PSRAM (GPIO26-37), the devkit's RGB LED (GPIO38/48), and ADC1
+    // (GPIO1-10, minus the ones used as inputs below) for motor current
+    // sensing later - ADC2 can't be used while Wi-Fi is on.
+    //
     // Relay outputs come first, before anything else, so the motors are
-    // guaranteed off as early as possible after reset. Avoid strapping pins
-    // (GPIO0/2/5/12/15) here: GPIO5 e.g. is pulled high and toggled by the
-    // boot ROM, which would briefly energize a relay on every reset.
-    let leaf_a_open = relay_output(peripherals.GPIO4.degrade());
-    let leaf_a_close = relay_output(peripherals.GPIO18.degrade());
-    let leaf_b_open = relay_output(peripherals.GPIO19.degrade());
-    let leaf_b_close = relay_output(peripherals.GPIO21.degrade());
+    // guaranteed off as early as possible after reset.
+    let leaf_a_open = relay_output(peripherals.GPIO15.degrade());
+    let leaf_a_close = relay_output(peripherals.GPIO16.degrade());
+    let leaf_b_open = relay_output(peripherals.GPIO17.degrade());
+    let leaf_b_close = relay_output(peripherals.GPIO18.degrade());
     // LAMP_BLINK net: the warning light, driven like a relay.
-    let warning_light = relay_output(peripherals.GPIO14.degrade());
+    let warning_light = relay_output(peripherals.GPIO21.degrade());
 
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 98768);
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
     esp_alloc::heap_allocator!(size: 64 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -123,14 +127,14 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap_or_default();
 
     // All inputs are active-low with an internal pull-up, same as the BOOT button.
-    let push_button = pulled_up_input(peripherals.GPIO22.degrade());
-    let radio_button = pulled_up_input(peripherals.GPIO23.degrade());
-    let wind_sensor = pulled_up_input(peripherals.GPIO25.degrade());
-    let wind_reset = pulled_up_input(peripherals.GPIO26.degrade());
-    let light_barrier1 = pulled_up_input(peripherals.GPIO27.degrade());
-    let light_barrier2 = pulled_up_input(peripherals.GPIO16.degrade());
+    let push_button = pulled_up_input(peripherals.GPIO7.degrade());
+    let radio_button = pulled_up_input(peripherals.GPIO8.degrade());
+    let wind_sensor = pulled_up_input(peripherals.GPIO9.degrade());
+    let wind_reset = pulled_up_input(peripherals.GPIO10.degrade());
+    let light_barrier1 = pulled_up_input(peripherals.GPIO11.degrade());
+    let light_barrier2 = pulled_up_input(peripherals.GPIO12.degrade());
     // IN7: arms the one-shot light barrier bypass (same as the MQTT switch).
-    let barrier_bypass_button = pulled_up_input(peripherals.GPIO17.degrade());
+    let barrier_bypass_button = pulled_up_input(peripherals.GPIO13.degrade());
 
     // Local gate control is started before - and independently of - any
     // networking: push button, radio remote, wind guard and light barriers

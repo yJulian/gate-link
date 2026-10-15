@@ -1,8 +1,8 @@
 # Gate Link
 
-ESP32 firmware for a two-leaf gate controller, exposed to [Home Assistant](https://www.home-assistant.io/) over MQTT with [MQTT Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery). No manual YAML entity setup needed.
+ESP32-S3 firmware for a two-leaf gate controller, exposed to [Home Assistant](https://www.home-assistant.io/) over MQTT with [MQTT Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery). No manual YAML entity setup needed.
 
-`no_std` Rust on the [Embassy](https://embassy.dev/) async executor (via `esp-rtos`), targeting `xtensa-esp32-none-elf`.
+`no_std` Rust on the [Embassy](https://embassy.dev/) async executor (via `esp-rtos`), targeting `xtensa-esp32s3-none-elf`.
 
 ## Features
 
@@ -44,7 +44,7 @@ defaults to 15s per motor (`LEFT_/RIGHT_MOTOR_DURATION_SECS` in `main.rs`).
 
 The toolchain is pinned via `rust-toolchain.toml` to the `esp` channel,
 installed with [`espup`](https://github.com/esp-rs/espup). The target
-(`xtensa-esp32-none-elf`) and `build-std` are already configured in
+(`xtensa-esp32s3-none-elf`) and `build-std` are already configured in
 `.cargo/config.toml`, so no extra flags are needed:
 
 ```sh

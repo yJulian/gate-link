@@ -19,17 +19,17 @@ exclude = ["vendor/mqtt-async-embedded"]
 
 [dependencies]
 gate-core = { path = "gate-core" }
-esp-hal = { version = "~1.1.0", features = ["esp32", "log-04", "unstable"] }
+esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
 
 esp-rtos = { version = "0.3.0", features = [
   "embassy",
   "esp-alloc",
   "esp-radio",
-  "esp32",
+  "esp32s3",
   "log-04",
 ] }
 
-esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
 log                    = "0.4.27"
 
 embassy-net = { version = "0.9.1", features = [
@@ -43,14 +43,14 @@ embassy-net = { version = "0.9.1", features = [
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
 esp-alloc = "0.10.0"
-esp-println = { version = "0.17.0", features = ["esp32", "log-04"] }
+esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
 # for more networking protocol support see https://crates.io/crates/edge-net
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-futures = "0.1.2"
 embassy-time = { version = "0.5.0", features = ["log"] }
 esp-radio = { version = "0.18.0", features = [
   "esp-alloc",
-  "esp32",
+  "esp32s3",
   "log-04",
   "unstable",
   "wifi",
@@ -78,7 +78,7 @@ heapless         = "0.9"
 mqtt-async-embedded = { path = "vendor/mqtt-async-embedded" }
 
 # Flash-persisted config storage
-esp-storage          = { version = "0.9.0", features = ["esp32"] }
+esp-storage          = { version = "0.9.0", features = ["esp32s3"] }
 embassy-embedded-hal = "0.6.0"
 sequential-storage   = { version = "7.2.0", features = ["postcard"] }
 postcard             = { version = "1", default-features = false }
