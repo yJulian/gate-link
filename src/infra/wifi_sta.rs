@@ -6,7 +6,7 @@ use embassy_time::{Duration, Timer};
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{self, AuthenticationMethod, WifiController, WifiError};
 
-use crate::infra::config::AppConfig;
+use app_core::config::AppConfig;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 

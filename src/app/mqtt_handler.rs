@@ -5,56 +5,31 @@
 //! future ones unrelated to this file - can *send* an MQTT message by calling
 //! `crate::infra::mqtt_client::publish` directly, but *receiving* is centralized
 //! here, so there's one place to look for how the device reacts to the broker.
+//! Which topic/payload means which command is defined (and tested) in
+//! `app_core::mqtt`.
 
+use app_core::mqtt::{COMMAND_TOPICS, Command};
 use log::warn;
-
 use mqtt_async_embedded::packet::QoS;
 
-use crate::app::mqtt_topics::*;
 use crate::infra::mqtt_client;
-
-use crate::physical::gate::{close, open, reset_wind_lock, set_barrier_bypass, stop};
+use crate::physical;
 
 #[embassy_executor::task]
 pub async fn task() -> ! {
-    // Subscribe to topics
-    mqtt_client::subscribe(COVER_COMMAND_TOPIC, QoS::AtLeastOnce).await;
-    mqtt_client::subscribe(BUTTON_COMMAND_TOPIC, QoS::AtLeastOnce).await;
-    mqtt_client::subscribe(BARRIER_BYPASS_COMMAND_TOPIC, QoS::AtLeastOnce).await;
+    for topic in COMMAND_TOPICS {
+        mqtt_client::subscribe(topic, QoS::AtLeastOnce).await;
+    }
 
     loop {
         let message = mqtt_client::receive().await;
-        on_message(&message.topic, &message.payload);
-    }
-}
-
-/// Central callback for every incoming MQTT message.
-fn on_message(topic: &str, payload: &[u8]) {
-    match topic {
-        COVER_COMMAND_TOPIC => {
-            let text = core::str::from_utf8(payload).unwrap_or("");
-            match text {
-                OPEN_PAYLOAD => open(),
-                CLOSE_PAYLOAD => close(),
-                STOP_PAYLOAD => stop(),
-                _ => warn!("[{topic}] unhandled payload: {text}"),
-            }
+        match Command::parse(&message.topic, &message.payload) {
+            Ok(command) => physical::gate::execute(command),
+            Err(err) => warn!(
+                "[{}] {err:?}: {:?}",
+                message.topic,
+                core::str::from_utf8(&message.payload).unwrap_or("<binary>")
+            ),
         }
-        BUTTON_COMMAND_TOPIC => {
-            let text = core::str::from_utf8(payload).unwrap_or("");
-            match text {
-                RESET_WIND_LOCK_PAYLOAD => reset_wind_lock(),
-                _ => warn!("[{topic}] unhandled payload: {text}"),
-            }
-        }
-        BARRIER_BYPASS_COMMAND_TOPIC => {
-            let text = core::str::from_utf8(payload).unwrap_or("");
-            match text {
-                ON_PAYLOAD => set_barrier_bypass(true),
-                OFF_PAYLOAD => set_barrier_bypass(false),
-                _ => warn!("[{topic}] unhandled payload: {text}"),
-            }
-        }
-        _ => warn!("[{topic}] unhandled topic"),
     }
 }

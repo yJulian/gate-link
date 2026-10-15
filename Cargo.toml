@@ -15,10 +15,12 @@ partition_table = "partitions.csv"
 # Hardware-independent crates, unit-tested on the host (`cargo test-core`,
 # see .cargo/config.toml):
 # - gate-core: gate control logic (relay timing, safety inputs, warning light)
+# - app-core: provisioning config, MQTT commands/state/discovery, flash records
 # - vendor/mqtt-async-embedded: the patched MQTT client
-members = ["gate-core", "vendor/mqtt-async-embedded"]
+members = ["gate-core", "app-core", "vendor/mqtt-async-embedded"]
 
 [dependencies]
+app-core  = { path = "app-core" }
 gate-core = { path = "gate-core" }
 esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
 
@@ -82,9 +84,6 @@ mqtt-async-embedded = { path = "vendor/mqtt-async-embedded" }
 esp-storage          = { version = "0.9.0", features = ["esp32s3"] }
 embassy-embedded-hal = "0.6.0"
 sequential-storage   = { version = "7.2.0", features = ["postcard"] }
-postcard             = { version = "1", default-features = false }
-serde                = { version = "1", default-features = false, features = ["derive", "alloc"] }
-serde_json           = { version = "1", default-features = false, features = ["alloc"] }
 
 # Provisioning HTTP server + AP-mode DHCP server
 picoserve        = { version = "0.18.0", features = ["alloc", "embassy"] }

@@ -12,24 +12,40 @@ motors) and exposes it to Home Assistant over MQTT (with HA MQTT Discovery).
 ## Build / lint / flash
 
 This is embedded firmware, not a hosted binary — the firmware itself needs
-physical hardware (or `espflash`) to run. The hardware-independent gate logic
-lives in the `gate-core` workspace crate and *is* unit-tested on the host.
+physical hardware (or `espflash`) to run. Everything that doesn't touch the
+ESP32 lives in three hardware-independent workspace crates that *are*
+unit-tested on the host:
+
+- `gate-core` — gate control: relay timing, safety inputs, barrier bypass,
+  warning light, input debouncing.
+- `app-core` — provisioning config + form, MQTT topics/commands/state, HA
+  discovery configs, the flash record format.
+- `vendor/mqtt-async-embedded` — the patched MQTT client (wire format,
+  packet framing, keep-alive).
 
 ```sh
 cargo build --release              # what CI builds
 cargo fmt --all -- --check         # CI also runs this
 cargo clippy --all-features --workspace -- -D warnings   # CI: warnings are hard errors
-cargo test-core                    # CI: host unit tests of gate-core and the MQTT client (alias, see below)
+cargo test-core                    # CI: host unit tests of the three crates above (alias, see below)
 cargo run                          # builds + flashes + monitors via espflash (see .cargo/config.toml runner)
 ```
 
 `cargo test-core` is an alias in `.cargo/config.toml`: plain `cargo test`
 doesn't work because the default target is xtensa and the global `build-std`
 can only be extended (not cleared) from the CLI, so the alias builds for
-`host-tuple` and adds `std`/`test` to `build-std`. Tests run on a simulated
+`host-tuple` and adds `std`/`test` to `build-std`. Gate tests run on a simulated
 clock (embassy-time `mock-driver`) via the harness in `gate-core/src/sim.rs`:
 mock relay pins log every switch with its millisecond timestamp, so tests
-assert exact relay sequences without real waiting.
+assert exact relay sequences without real waiting. `app-core` tests drive a
+real `Gate` from MQTT payloads, decode forms with picoserve's own decoder,
+encode discovery configs with the real MQTT encoder (they must fit
+`MQTT_BUFFER_SIZE`), and run the flash records on `sequential-storage`'s mock
+flash, including power loss after every few written bytes. The MQTT client is
+tested against a scripted transport that splits and merges packets like TCP.
+
+**When adding logic, put it in one of these crates (with a test), not in
+`src/`** — `src/` should only move data between them and the hardware.
 
 The toolchain is pinned via `rust-toolchain.toml` to the `esp` channel
 (installed with [`espup`](https://github.com/esp-rs/espup)), and the target
@@ -97,18 +113,22 @@ about topic semantics:
   fires after every (re)connect; `app::discovery::task` uses it to republish
   discovery configs and the current state.
 - `mqtt_client::receive()` — deliberately drained by exactly one task,
-  `app::mqtt_handler::task`, which is the single place inbound messages are
-  interpreted (see the `match` in `on_message`). If you're adding a new
-  inbound command, it goes there, not in a new consumer of `receive()`.
+  `app::mqtt_handler::task`, which turns each message into an
+  `app_core::mqtt::Command` and hands it to `physical::gate::execute`. A new
+  inbound command goes into `Command`/`Command::parse` (+ `COMMAND_TOPICS`,
+  which the handler subscribes to), not into a new consumer of `receive()`.
 - `mqtt_client::subscribe(...)` re-subscribes automatically on reconnect
   (subscriptions are tracked in a static list and replayed against the new
   connection).
-- Topic/payload string constants live centrally in `app::mqtt_topics`.
+- Topic/payload constants, `Command`, the published state
+  (`state_messages`) and the HA discovery configs (`app_core::discovery`)
+  live in `app-core`; its tests cross-check that every command/state HA is
+  told about is actually understood/published.
 - The MQTT client itself is a vendored, patched fork
   (`vendor/mqtt-async-embedded`) — crates.io's 1.0.0 can't send CONNECT
   credentials, has a stub/no-op `publish`/`decode`, and didn't frame packets
   in the TCP stream. See that crate's README for the exact diff from upstream
-  before touching MQTT wire-level code; its tests run with `cargo test-core`.
+  before touching MQTT wire-level code.
 
 ### Gate control (`gate-core` crate + `physical/gate.rs` glue)
 
@@ -116,8 +136,9 @@ All gate control logic lives in the `gate-core` workspace crate (no ESP32
 dependencies, generic over `embedded_hal::digital::OutputPin`) so it can be
 unit-tested on the host; **change gate behavior there and add a test in
 `gate-core/src/gate/tests.rs`**. `src/physical/gate.rs` only holds the
-firmware glue: the `static CONTROLS`, `fn()` wrappers for inputs/MQTT,
-`publish_state` and the task that persists each settled `Snapshot` to flash.
+firmware glue: the `static CONTROLS`, `fn()` wrappers for inputs,
+`execute` for MQTT commands, `publish_state`, the warning light task and the
+task that persists each settled `Snapshot` to flash.
 
 - `gate_core::Controls` holds the shared state as atomics (current/last
   direction, coarse position, wind lock, two light-barrier flags) plus a
@@ -170,14 +191,17 @@ spawn them from `run_station_mode` in `main.rs` alongside the existing ones.
 Two independent key-value entries (`AppConfig` and `GateState`) written into
 the dedicated `app_cfg` data partition (see `partitions.csv`) via
 `sequential-storage`'s log-structured map — chosen over raw flash writes so
-this gets wear-leveling and power-loss safety for free. All storage functions
+this gets wear-leveling and power-loss safety for free. The record format is
+`app_core::storage::Store` (generic over the flash, tested on a mock);
+`infra::storage` only looks up the partition. All storage functions
 take `&mut FlashStorage` (obtained by locking the `SharedFlash` mutex) rather
 than constructing their own, per the single-instance constraint noted above.
 
 ## Notes
 
 - `#![no_std]` throughout; `alloc` is available (`extern crate alloc`) but
-  there's no OS underneath — no threads, no filesystem, no host-side testing.
+  there's no OS underneath — no threads, no filesystem. The host-tested crates
+  are `no_std` too, except under `cfg(test)`.
 - `clippy::mem_forget` and `clippy::large_stack_frames` are hard denies at
   the crate root (`src/bin/main.rs`) — stack space and buffer lifetimes are
   scarce/safety-critical on this target. Local `#[allow(...)]`s in `main.rs`

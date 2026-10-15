@@ -3,4 +3,3 @@
 
 pub mod discovery;
 pub mod mqtt_handler;
-pub mod mqtt_topics;

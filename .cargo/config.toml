@@ -16,12 +16,12 @@ target = "xtensa-esp32s3-none-elf"
 build-std = ["alloc", "core"]
 
 [alias]
-# Host-side unit tests of the hardware-independent crates (gate logic, the
-# MQTT client). Overrides the
+# Host-side unit tests of the hardware-independent crates (gate logic, MQTT
+# commands/discovery/provisioning/flash records, the MQTT client). Overrides the
 # xtensa default target, and - since `build-std` above can only be extended,
 # not cleared, from the command line - also builds `std` for the host.
 test-core = [
-  "test", "-p", "gate-core", "-p", "mqtt-async-embedded",
+  "test", "-p", "gate-core", "-p", "app-core", "-p", "mqtt-async-embedded",
   "--target", "host-tuple",
   "--config", 'unstable.build-std=["std", "test", "panic_unwind"]',
 ]

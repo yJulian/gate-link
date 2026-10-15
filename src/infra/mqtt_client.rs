@@ -35,10 +35,10 @@ use mqtt_async_embedded::client::{MqttClient, MqttEvent, MqttOptions};
 use mqtt_async_embedded::packet::QoS;
 use mqtt_async_embedded::transport::MqttTransport;
 
-use crate::infra::config::AppConfig;
+use app_core::config::AppConfig;
+use app_core::mqtt::MQTT_BUFFER_SIZE;
 
 const MAX_TOPICS: usize = 4;
-const MQTT_BUF_SIZE: usize = 512;
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// How many incoming messages/subscriptions may be queued before the producer
@@ -222,7 +222,7 @@ async fn run_once(stack: Stack<'static>, cfg: &AppConfig) -> Result<(), &'static
         options = options.with_credentials(username, password.as_bytes());
     }
 
-    let mut client = MqttClient::<_, MAX_TOPICS, MQTT_BUF_SIZE>::new(transport, options);
+    let mut client = MqttClient::<_, MAX_TOPICS, MQTT_BUFFER_SIZE>::new(transport, options);
     client.connect().await.map_err(|_| "MQTT CONNECT failed")?;
     log::info!("Connected to MQTT broker at {}", cfg.mqtt_host);
 

@@ -1,0 +1,26 @@
+[package]
+edition      = "2024"
+name         = "app-core"
+rust-version = "1.88"
+version      = "0.1.0"
+description  = "Hardware-independent firmware logic (provisioning config, MQTT commands/state/discovery, flash records), unit-tested on the host"
+
+[dependencies]
+embedded-storage-async = "0.4.1"
+gate-core              = { path = "../gate-core" }
+sequential-storage     = { version = "7.2.0", features = ["postcard"] }
+serde                  = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json             = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+# Host-side test support: a simulated NOR flash (sequential-storage's own
+# test mock), the real MQTT encoder for size checks, a minimal executor, and
+# std implementations of the clock/critical section gate-core links against.
+critical-section    = { version = "1.2.0", features = ["std"] }
+embassy-futures     = "0.1.2"
+embassy-time        = { version = "0.5.0", features = ["generic-queue-8", "mock-driver"] }
+embedded-hal        = "1.0.0"
+mqtt-async-embedded = { path = "../vendor/mqtt-async-embedded" }
+# The form decoder the provisioning server really uses.
+picoserve           = { version = "0.18.0", features = ["alloc"] }
+sequential-storage  = { version = "7.2.0", features = ["postcard", "_test"] }

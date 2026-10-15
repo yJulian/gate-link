@@ -5,7 +5,6 @@
 //! broker connection; see its docs for how incoming/outgoing messages cross into
 //! the application layer.
 
-pub mod config;
 pub mod dhcp_server;
 pub mod mqtt_client;
 pub mod provisioning_http;

@@ -5,14 +5,15 @@
 //! lives in the hardware-independent `gate-core` crate, where it's
 //! unit-tested.
 
+use app_core::mqtt::{Command, state_messages};
+use app_core::storage::GateState;
 use esp_hal::gpio::Output;
-use gate_core::{Controls, CoverState, Gate, LeafTiming, Motor, Snapshot};
+use gate_core::{Controls, Gate, LeafTiming, Motor, Snapshot};
 use log::warn;
 use mqtt_async_embedded::packet::QoS;
 
-use crate::app::mqtt_topics::*;
 use crate::infra::mqtt_client;
-use crate::infra::storage::{self, GateState, SharedFlash};
+use crate::infra::storage::{self, SharedFlash};
 use crate::physical::gate_config::{END_STOP_OVERRUN, REVERSE_PAUSE, WARNING_LIGHT_HALF_PERIOD};
 
 pub struct MotorSettings {
@@ -26,20 +27,18 @@ pub struct MotorSettings {
 
 static CONTROLS: Controls = Controls::new();
 
-// Plain `fn()`s so they can be handed to `physical::inputs` and called from
-// `app::mqtt_handler`. Never block; see `gate_core::Controls` for semantics.
-
-pub fn open() {
-    CONTROLS.open();
+/// Executes an MQTT command (from `app::mqtt_handler`). Never blocks.
+pub fn execute(command: Command) {
+    command.apply(&CONTROLS);
+    if let Command::SetBarrierBypass(_) = command {
+        // Doesn't go through the gate task (until it's used up), so publish
+        // the new switch state right away.
+        publish_state();
+    }
 }
 
-pub fn close() {
-    CONTROLS.close();
-}
-
-pub fn stop() {
-    CONTROLS.stop();
-}
+// Plain `fn()`s so they can be handed to `physical::inputs`. Never block;
+// see `gate_core::Controls` for semantics.
 
 pub fn impulse() {
     CONTROLS.impulse();
@@ -61,16 +60,9 @@ pub fn barrier2_set(active: bool) {
     CONTROLS.barrier2_set(active);
 }
 
-/// Arms/disarms the one-shot light barrier bypass (MQTT switch). Published
-/// right away, since it doesn't go through the gate task until it's used up.
-pub fn set_barrier_bypass(active: bool) {
-    CONTROLS.set_barrier_bypass(active);
-    publish_state();
-}
-
 /// Local bypass input: a press only ever arms the bypass.
 pub fn arm_barrier_bypass() {
-    set_barrier_bypass(true);
+    execute(Command::SetBarrierBypass(true));
 }
 
 /// Publishes the current cover, wind-lock and barrier-bypass state
@@ -78,42 +70,9 @@ pub fn arm_barrier_bypass() {
 /// if MQTT is down the message is simply queued or dropped, and the full
 /// state is republished on the next (re)connect anyway.
 pub fn publish_state() {
-    let cover = match CONTROLS.cover_state() {
-        CoverState::Open => OPEN_STATE,
-        CoverState::Opening => OPENING_STATE,
-        CoverState::Closed => CLOSED_STATE,
-        CoverState::Closing => CLOSING_STATE,
-    };
-    mqtt_client::publish(
-        COVER_STATE_TOPIC,
-        cover.as_bytes().to_vec(),
-        QoS::AtLeastOnce,
-        true,
-    );
-
-    let wind = if CONTROLS.wind_locked() {
-        ON_PAYLOAD
-    } else {
-        OFF_PAYLOAD
-    };
-    mqtt_client::publish(
-        WIND_STATE_TOPIC,
-        wind.as_bytes().to_vec(),
-        QoS::AtLeastOnce,
-        true,
-    );
-
-    let bypass = if CONTROLS.barrier_bypass() {
-        ON_PAYLOAD
-    } else {
-        OFF_PAYLOAD
-    };
-    mqtt_client::publish(
-        BARRIER_BYPASS_STATE_TOPIC,
-        bypass.as_bytes().to_vec(),
-        QoS::AtLeastOnce,
-        true,
-    );
+    for (topic, payload) in state_messages(&CONTROLS) {
+        mqtt_client::publish(topic, payload.as_bytes(), QoS::AtLeastOnce, true);
+    }
 }
 
 /// Blinks the warning light while the gate moves or the barrier bypass is

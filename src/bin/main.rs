@@ -7,6 +7,7 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+use app_core::config::AppConfig;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_sync::mutex::Mutex;
@@ -18,7 +19,6 @@ use esp_radio::wifi::{Interface, WifiController};
 use esp_storage::FlashStorage;
 use log::{error, info};
 use mqtt_gate::app::{discovery, mqtt_handler};
-use mqtt_gate::infra::config::AppConfig;
 use mqtt_gate::infra::storage::SharedFlash;
 use mqtt_gate::infra::{
     dhcp_server, mqtt_client, provisioning_http, reset_button, storage, wifi_ap, wifi_sta,

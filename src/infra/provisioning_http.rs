@@ -4,8 +4,9 @@
 //! the config and reboot into station mode.
 
 use alloc::string::String;
-use core::fmt::Write as _;
 
+use app_core::config::{AppConfig, SubmittedForm};
+use app_core::provisioning::{SAVED_PAGE, form_page};
 use embassy_net::Stack;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -13,8 +14,6 @@ use picoserve::extract::Form;
 use picoserve::response::Content;
 use picoserve::routing::get;
 use picoserve::{AppBuilder, AppRouter, Router};
-
-use crate::infra::config::{AppConfig, SubmittedForm};
 
 /// Set once a valid form submission has been persisted; `main()` waits on this to
 /// know when to reboot into station mode.
@@ -38,46 +37,17 @@ impl<T: AsRef<str>> Content for Html<T> {
     }
 }
 
-fn render_form(error: Option<&str>) -> String {
-    let mut page = String::new();
-    let _ = write!(
-        page,
-        "<!doctype html><html><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>mqtt_gate setup</title></head><body>\
-         <h1>mqtt_gate setup</h1>"
-    );
-    if let Some(error) = error {
-        let _ = write!(page, "<p style=\"color:red\">{error}</p>");
-    }
-    let _ = write!(
-        page,
-        "<form method=\"post\" action=\"/\">\
-         <label>Wi-Fi SSID<br><input name=\"ssid\" required maxlength=\"32\"></label><br>\
-         <label>Wi-Fi password<br><input name=\"wifi_password\" type=\"password\" maxlength=\"64\"></label><br>\
-         <label>MQTT host<br><input name=\"mqtt_host\" required maxlength=\"128\"></label><br>\
-         <label>MQTT port<br><input name=\"mqtt_port\" type=\"number\" value=\"1883\" required></label><br>\
-         <label>MQTT username (optional)<br><input name=\"mqtt_username\" maxlength=\"64\"></label><br>\
-         <label>MQTT password (optional)<br><input name=\"mqtt_password\" type=\"password\" maxlength=\"64\"></label><br>\
-         <button type=\"submit\">Save &amp; reboot</button>\
-         </form></body></html>"
-    );
-    page
-}
-
 async fn index() -> Html<String> {
-    Html(render_form(None))
+    Html(form_page(None))
 }
 
 async fn submit(Form(form): Form<SubmittedForm>) -> Html<String> {
     match form.into_config() {
         Ok(cfg) => {
             CONFIG_SUBMITTED.signal(cfg);
-            Html(String::from(
-                "<!doctype html><html><body><p>Saved. Rebooting into station mode...</p></body></html>",
-            ))
+            Html(String::from(SAVED_PAGE))
         }
-        Err(error) => Html(render_form(Some(error))),
+        Err(error) => Html(form_page(Some(error))),
     }
 }
 
