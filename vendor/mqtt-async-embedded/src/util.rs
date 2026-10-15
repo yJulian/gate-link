@@ -34,6 +34,30 @@ pub fn read_variable_byte_integer(
     Ok(value)
 }
 
+/// Total length (fixed header + remaining length) of the packet at the start
+/// of `buf`, or `None` if `buf` doesn't hold all of it yet.
+///
+/// TCP is a byte stream: one read may return part of a packet or several
+/// packets at once, so packets have to be framed by their length.
+pub fn complete_packet_len(
+    buf: &[u8],
+) -> Result<Option<usize>, MqttError<transport::ErrorPlaceHolder>> {
+    let mut remaining_len = 0;
+    let mut multiplier = 1;
+    for i in 0..4 {
+        let Some(&byte) = buf.get(1 + i) else {
+            return Ok(None);
+        };
+        remaining_len += (byte & 127) as usize * multiplier;
+        if byte & 128 == 0 {
+            let total = 1 + (i + 1) + remaining_len;
+            return Ok((buf.len() >= total).then_some(total));
+        }
+        multiplier *= 128;
+    }
+    Err(MqttError::Protocol(ProtocolError::MalformedPacket))
+}
+
 /// Writes a variable-byte integer to the buffer, advancing the cursor.
 pub fn write_variable_byte_integer(
     cursor: &mut usize,

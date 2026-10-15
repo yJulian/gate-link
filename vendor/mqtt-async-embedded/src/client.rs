@@ -4,8 +4,11 @@
 //! connection, and communication with an MQTT broker.
 
 use crate::error::{MqttError, ProtocolError};
-use crate::packet::{self, Connect, EncodePacket, MqttPacket, PingReq, Publish, QoS};
+use crate::packet::{
+    self, Connect, DecodePacket, EncodePacket, MqttPacket, PingReq, PubAck, Publish, QoS,
+};
 use crate::transport::{self, MqttTransport};
+use crate::util;
 use embassy_time::{Duration, Instant};
 
 /// Configuration options for the `MqttClient`.
@@ -69,6 +72,11 @@ where
     options: MqttOptions<'a>,
     tx_buffer: [u8; BUF_SIZE],
     rx_buffer: [u8; BUF_SIZE],
+    /// How many bytes of `rx_buffer` hold received, not yet dropped data.
+    rx_len: usize,
+    /// Length of the packet at the front of `rx_buffer` that was already
+    /// handed out; dropped before the next read.
+    rx_consumed: usize,
     state: ConnectionState,
     last_tx_time: Instant,
     next_packet_id: u16,
@@ -84,6 +92,8 @@ where
             options,
             tx_buffer: [0; BUF_SIZE],
             rx_buffer: [0; BUF_SIZE],
+            rx_len: 0,
+            rx_consumed: 0,
             state: ConnectionState::Disconnected,
             last_tx_time: Instant::now(),
             next_packet_id: 1,
@@ -108,8 +118,14 @@ where
             .encode(&mut self.tx_buffer)
             .map_err(MqttError::cast_transport_error)?;
         self.transport.send(&self.tx_buffer[..len]).await?;
-        let n = self.transport.recv(&mut self.rx_buffer).await?;
-        let packet = packet::decode::<T::Error>(&self.rx_buffer[..n])?
+        self.rx_len = 0;
+        self.rx_consumed = 0;
+        let len = self
+            .next_packet()
+            .await?
+            .ok_or(MqttError::Protocol(ProtocolError::InvalidResponse))?;
+        self.rx_consumed = len;
+        let packet = packet::decode::<T::Error>(&self.rx_buffer[..len])?
             .ok_or(MqttError::Protocol(ProtocolError::InvalidResponse))?;
         if let MqttPacket::ConnAck(connack) = packet {
             if connack.reason_code == 0 {
@@ -153,11 +169,7 @@ where
     }
 
     /// Subscribes to a topic.
-    pub async fn subscribe<'p>(
-        &mut self,
-        topic: &'p str,
-        qos: QoS,
-    ) -> Result<(), MqttError<T::Error>>
+    pub async fn subscribe(&mut self, topic: &str, qos: QoS) -> Result<(), MqttError<T::Error>>
     where
         T::Error: transport::TransportError,
     {
@@ -190,6 +202,11 @@ where
     }
 
     /// Polls the connection for incoming packets and handles keep-alives.
+    /// Handles at most one packet per call; returns `Ok(None)` for anything
+    /// that isn't a PUBLISH (acks, ping responses, unknown packet types).
+    /// Incoming QoS 1 PUBLISHes are acknowledged with a PUBACK.
+    ///
+    /// Cancel-safe: dropping the future never loses received bytes.
     ///
     /// The returned `MqttEvent` contains references to the client's internal receive
     /// buffer. These references are only valid until the next call to `poll`.
@@ -205,16 +222,57 @@ where
             self._send_packet(PingReq).await?;
         }
 
-        let n = self.transport.recv(&mut self.rx_buffer).await?;
-        if n > 0 {
-            if let Some(packet) = packet::decode::<T::Error>(&self.rx_buffer[..n])? {
-                if let MqttPacket::Publish(p) = packet {
-                    // The event is valid for the lifetime 'p of the poll borrow
-                    return Ok(Some(MqttEvent::Publish(p)));
-                }
-            }
+        let Some(len) = self.next_packet().await? else {
+            return Ok(None);
+        };
+        const PUBLISH: u8 = 3;
+        if self.rx_buffer[0] >> 4 != PUBLISH {
+            self.rx_consumed = len;
+            return Ok(None);
         }
-        Ok(None)
+        let publish =
+            Publish::decode(&self.rx_buffer[..len]).map_err(MqttError::cast_transport_error)?;
+        if let (QoS::AtLeastOnce, Some(packet_id)) = (publish.qos, publish.packet_id) {
+            // Only marked consumed after the ack went out: if this future is
+            // dropped mid-send, the next poll delivers the packet again.
+            self._send_packet(PubAck { packet_id }).await?;
+        }
+        self.rx_consumed = len;
+        let publish =
+            Publish::decode(&self.rx_buffer[..len]).map_err(MqttError::cast_transport_error)?;
+        Ok(Some(MqttEvent::Publish(publish)))
+    }
+
+    /// Drops the packet handed out last, then reads until a complete packet
+    /// is at the front of `rx_buffer` and returns its length. `None` if the
+    /// transport returned no data.
+    async fn next_packet(&mut self) -> Result<Option<usize>, MqttError<T::Error>>
+    where
+        T::Error: transport::TransportError,
+    {
+        if self.rx_consumed > 0 {
+            self.rx_buffer.copy_within(self.rx_consumed..self.rx_len, 0);
+            self.rx_len -= self.rx_consumed;
+            self.rx_consumed = 0;
+        }
+        loop {
+            if let Some(len) = util::complete_packet_len(&self.rx_buffer[..self.rx_len])
+                .map_err(MqttError::cast_transport_error)?
+            {
+                return Ok(Some(len));
+            }
+            if self.rx_len == BUF_SIZE {
+                return Err(MqttError::BufferTooSmall);
+            }
+            let n = self
+                .transport
+                .recv(&mut self.rx_buffer[self.rx_len..])
+                .await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            self.rx_len += n;
+        }
     }
 
     fn get_next_packet_id(&mut self) -> u16 {

@@ -187,10 +187,10 @@ pub struct ConnAck {
 }
 impl DecodePacket<'_> for ConnAck {
     fn decode(buf: &[u8]) -> Result<Self, MqttError<transport::ErrorPlaceHolder>> {
-        let mut cursor = 2;
-        let session_present = (buf[cursor] & 0x01) != 0;
-        cursor += 1;
-        let reason_code = buf[cursor];
+        let &[_, _, flags, reason_code, ..] = buf else {
+            return Err(MqttError::Protocol(ProtocolError::MalformedPacket));
+        };
+        let session_present = (flags & 0x01) != 0;
         Ok(Self {
             session_present,
             reason_code,
@@ -217,7 +217,12 @@ impl<'a> DecodePacket<'a> for Publish<'a> {
         };
         let retain = (buf[0] & 0x01) != 0;
         let mut cursor = 1;
-        let _remaining_len = read_variable_byte_integer(&mut cursor, buf)?;
+        let remaining_len = read_variable_byte_integer(&mut cursor, buf)?;
+        // The payload runs to the end of *this* packet, not of the buffer
+        // (which may already hold the next packet).
+        let buf = buf
+            .get(..cursor + remaining_len)
+            .ok_or(MqttError::Protocol(ProtocolError::MalformedPacket))?;
         let topic = read_utf8_string(&mut cursor, buf)?;
         let packet_id = if qos != QoS::AtMostOnce {
             let id = u16::from_be_bytes(
@@ -357,8 +362,11 @@ pub struct SubAck {
 }
 impl DecodePacket<'_> for SubAck {
     fn decode(buf: &[u8]) -> Result<Self, MqttError<transport::ErrorPlaceHolder>> {
-        let mut cursor = 2;
-        let _remaining_len = read_variable_byte_integer(&mut cursor, buf)?;
+        let mut cursor = 1;
+        let remaining_len = read_variable_byte_integer(&mut cursor, buf)?;
+        let buf = buf
+            .get(..cursor + remaining_len)
+            .ok_or(MqttError::Protocol(ProtocolError::MalformedPacket))?;
         let packet_id = u16::from_be_bytes(
             buf.get(cursor..cursor + 2)
                 .ok_or(MqttError::Protocol(ProtocolError::MalformedPacket))?

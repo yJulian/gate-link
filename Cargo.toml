@@ -12,10 +12,11 @@ path = "./src/bin/main.rs"
 partition_table = "partitions.csv"
 
 [workspace]
-# gate-core: hardware-independent gate logic, unit-tested on the host
-# (`cargo test-core`, see .cargo/config.toml).
-members = ["gate-core"]
-exclude = ["vendor/mqtt-async-embedded"]
+# Hardware-independent crates, unit-tested on the host (`cargo test-core`,
+# see .cargo/config.toml):
+# - gate-core: gate control logic (relay timing, safety inputs, warning light)
+# - vendor/mqtt-async-embedded: the patched MQTT client
+members = ["gate-core", "vendor/mqtt-async-embedded"]
 
 [dependencies]
 gate-core = { path = "gate-core" }

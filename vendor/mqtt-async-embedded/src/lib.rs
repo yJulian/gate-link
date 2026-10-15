@@ -13,23 +13,28 @@
 //! ```no_run
 //! # use mqtt_async_embedded::client::{MqttClient, MqttOptions};
 //! # use mqtt_async_embedded::packet::QoS;
-//! # use mqtt_async_embedded::transport::MqttTransport;
+//! # use mqtt_async_embedded::transport::{MqttTransport, TransportError};
 //! #
+//! # #[derive(Debug)]
+//! # struct MyError;
+//! # impl TransportError for MyError {}
 //! # struct MyTransport;
 //! # impl MqttTransport for MyTransport {
-//! #     type Error = ();
+//! #     type Error = MyError;
 //! #     async fn send(&mut self, buf: &[u8]) -> Result<(), Self::Error> { Ok(()) }
 //! #     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> { Ok(0) }
 //! # }
 //! #
-//! # async fn run() -> Result<(), mqtt_async_embedded::error::MqttError<()>> {
+//! # async fn run() -> Result<(), mqtt_async_embedded::error::MqttError<MyError>> {
 //! let transport = MyTransport;
 //! let options = MqttOptions::new("my-device-id", "mqtt.broker.com", 1883)
 //!     .with_credentials("user", b"pass");
 //! let mut client = MqttClient::<_, 5, 256>::new(transport, options);
 //!
 //! client.connect().await?;
-//! client.publish("sensors/temperature", b"25.3", QoS::AtLeastOnce).await?;
+//! client
+//!     .publish("sensors/temperature", b"25.3", QoS::AtLeastOnce, false)
+//!     .await?;
 //!
 //! loop {
 //!     // Poll the client to process incoming messages and send keep-alives.
@@ -41,13 +46,16 @@
 //! # }
 //! ```
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 pub mod client;
 pub mod error;
 pub mod packet;
 pub mod transport;
 pub mod util;
+
+#[cfg(test)]
+mod tests;
 
 // Re-export key types for easier access at the crate root.
 pub use client::{MqttClient, MqttOptions};

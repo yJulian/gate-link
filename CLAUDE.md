@@ -19,7 +19,7 @@ lives in the `gate-core` workspace crate and *is* unit-tested on the host.
 cargo build --release              # what CI builds
 cargo fmt --all -- --check         # CI also runs this
 cargo clippy --all-features --workspace -- -D warnings   # CI: warnings are hard errors
-cargo test-core                    # CI: host unit tests of gate-core (alias, see below)
+cargo test-core                    # CI: host unit tests of gate-core and the MQTT client (alias, see below)
 cargo run                          # builds + flashes + monitors via espflash (see .cargo/config.toml runner)
 ```
 
@@ -106,8 +106,9 @@ about topic semantics:
 - Topic/payload string constants live centrally in `app::mqtt_topics`.
 - The MQTT client itself is a vendored, patched fork
   (`vendor/mqtt-async-embedded`) — crates.io's 1.0.0 can't send CONNECT
-  credentials and has a stub/no-op `publish`/`decode`. See that crate's
-  README for the exact diff from upstream before touching MQTT wire-level code.
+  credentials, has a stub/no-op `publish`/`decode`, and didn't frame packets
+  in the TCP stream. See that crate's README for the exact diff from upstream
+  before touching MQTT wire-level code; its tests run with `cargo test-core`.
 
 ### Gate control (`gate-core` crate + `physical/gate.rs` glue)
 
