@@ -11,6 +11,7 @@
 
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio::Input;
+use gate_core::Debouncer;
 
 const EDGE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Consecutive identical samples needed to accept a press or a release
@@ -21,22 +22,10 @@ const LEVEL_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[embassy_executor::task(pool_size = 5)]
 pub async fn edge_task(pin: Input<'static>, action: fn()) -> ! {
-    // true = released, waiting for a press; false = pressed, waiting for release.
-    let mut armed = true;
-    let mut stable = 0u8;
+    let mut debouncer = Debouncer::new(EDGE_STABLE_SAMPLES);
     loop {
-        // While armed we're looking for low (press), otherwise for high (release).
-        if pin.is_low() == armed {
-            stable += 1;
-            if stable >= EDGE_STABLE_SAMPLES {
-                stable = 0;
-                if armed {
-                    action();
-                }
-                armed = !armed;
-            }
-        } else {
-            stable = 0;
+        if debouncer.sample(pin.is_low()) {
+            action();
         }
         Timer::after(EDGE_POLL_INTERVAL).await;
     }

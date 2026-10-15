@@ -159,7 +159,8 @@ firmware glue: the `static CONTROLS`, `fn()` wrappers for inputs/MQTT,
 ### Adding a new physical input
 
 Use `physical::inputs::edge_task` (fires `action: fn()` once per press,
-debounced: press and release must each be stable for 50ms — for buttons/pulses) or `level_task` (calls `setter: fn(bool)` on
+debounced by `gate_core::Debouncer`: press and release must each be stable
+for 50ms — for buttons/pulses) or `level_task` (calls `setter: fn(bool)` on
 every level change, no debounce — for continuously-monitored state like the
 light barriers). Both are active-low with an internal pull-up by convention;
 spawn them from `run_station_mode` in `main.rs` alongside the existing ones.

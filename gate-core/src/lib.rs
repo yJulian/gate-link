@@ -11,6 +11,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod debounce;
 mod gate;
 mod motor;
 mod warning_light;
@@ -18,6 +19,7 @@ mod warning_light;
 #[cfg(test)]
 mod sim;
 
+pub use debounce::Debouncer;
 pub use gate::{Controls, CoverState, Gate, GateCommand, Snapshot};
 pub use motor::{Direction, LeafTiming, Motor};
 pub use warning_light::warning_light;
