@@ -1,11 +1,11 @@
 //! Publishes Home Assistant MQTT Discovery configs so the gate, its wind
-//! lock sensor and the wind-lock-reset button show up as entities without
-//! manual YAML.
+//! lock sensor, the wind-lock-reset button and the light barrier bypass
+//! switch show up as entities without manual YAML.
 //!
 //! <https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery>
 //!
 //! Configs are published retained, and - together with the current gate,
-//! wind-lock and spare-input state - republished after every broker
+//! wind-lock and barrier-bypass state - republished after every broker
 //! (re)connect, since anything published while offline may have been dropped.
 //! The actual state/command wiring lives in `crate::physical::gate` and
 //! `crate::app::mqtt_handler`.
@@ -74,12 +74,23 @@ struct ButtonConfig {
     device: Device,
 }
 
+#[derive(Serialize)]
+struct SwitchConfig {
+    name: &'static str,
+    unique_id: &'static str,
+    command_topic: &'static str,
+    state_topic: &'static str,
+    payload_on: &'static str,
+    payload_off: &'static str,
+    device: Device,
+}
+
 fn publish_config(topic: &'static str, payload: Vec<u8>) {
     mqtt_client::publish(topic, payload, QoS::AtLeastOnce, true);
 }
 
 /// Publishes the retained discovery config for the gate cover, the wind-lock
-/// sensor, the spare input sensor and the wind-lock reset button.
+/// sensor, the barrier bypass switch and the wind-lock reset button.
 pub fn publish_all() {
     let cover = CoverConfig {
         name: "gate",
@@ -99,7 +110,7 @@ pub fn publish_all() {
     publish_config(COVER_CONFIG_TOPIC, serde_json::to_vec(&cover).unwrap());
 
     let wind = BinarySensorConfig {
-        name: "Windwächter",
+        name: "Wind Monitor Input",
         unique_id: "mqtt_gate_wind",
         device_class: Some("safety"),
         state_topic: WIND_STATE_TOPIC,
@@ -109,26 +120,30 @@ pub fn publish_all() {
     };
     publish_config(WIND_CONFIG_TOPIC, serde_json::to_vec(&wind).unwrap());
 
-    // Unassigned input on this board revision - just mirrored to MQTT 1:1 by
-    // `physical::inputs::spare_input_task`, no gate behavior attached.
-    let spare_input = BinarySensorConfig {
-        name: "Reserve-Eingang",
-        unique_id: "mqtt_gate_spare_input",
-        device_class: None,
-        state_topic: SPARE_INPUT_STATE_TOPIC,
+    // An empty retained config removes the old spare-input entity from HA.
+    publish_config(SPARE_INPUT_CONFIG_TOPIC, Vec::new());
+
+    // Arms the one-shot light barrier bypass (see
+    // `physical::gate::set_barrier_bypass`); turns itself off again after
+    // the next movement.
+    let barrier_bypass = SwitchConfig {
+        name: "Light Barrier Bypass",
+        unique_id: "mqtt_gate_barrier_bypass",
+        command_topic: BARRIER_BYPASS_COMMAND_TOPIC,
+        state_topic: BARRIER_BYPASS_STATE_TOPIC,
         payload_on: ON_PAYLOAD,
         payload_off: OFF_PAYLOAD,
         device: DEVICE,
     };
     publish_config(
-        SPARE_INPUT_CONFIG_TOPIC,
-        serde_json::to_vec(&spare_input).unwrap(),
+        BARRIER_BYPASS_CONFIG_TOPIC,
+        serde_json::to_vec(&barrier_bypass).unwrap(),
     );
 
     // Clears the wind lock (see `physical::gate::reset_wind_lock`) without
     // commanding any gate movement itself.
     let reset_anemometer = ButtonConfig {
-        name: "Windwächter zurücksetzen",
+        name: "Reset Windmonitor",
         unique_id: "mqtt_gate_reset_anemometer",
         command_topic: BUTTON_COMMAND_TOPIC,
         payload_press: RESET_WIND_LOCK_PAYLOAD,
@@ -146,6 +161,5 @@ pub async fn task() -> ! {
         mqtt_client::wait_connected().await;
         publish_all();
         physical::gate::publish_state();
-        physical::inputs::publish_spare_state();
     }
 }

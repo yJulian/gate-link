@@ -3,11 +3,13 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use embassy_futures::select::select;
 use embassy_time::Duration;
 
 use super::*;
 use crate::motor::LeafTiming;
 use crate::sim::{self, MockPin, PinLog, off, on};
+use crate::warning_light;
 
 /// Leaf A opens first and closes second, leaf B the other way round - the
 /// same shape as the installation's `gate_config`.
@@ -452,6 +454,136 @@ fn wind_lock_restored_at_boot_opens_without_a_command() {
         snapshot(OPEN, OPEN, true)
     );
     assert_eq!(log.take()[0], on(0, A_OPEN));
+}
+
+#[test]
+fn barrier_bypass_ignores_both_barriers_for_one_movement() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, OPEN, OPEN, false);
+
+    controls.barrier1_set(true);
+    controls.barrier2_set(true);
+    controls.set_barrier_bypass(true);
+    controls.close();
+    assert_eq!(
+        clock.run_until_ready(gate.step(), LIMIT),
+        snapshot(CLOSED, CLOSED, false)
+    );
+    assert_eq!(log.take().len(), 4);
+    // Used up by that movement: the barriers block again.
+    assert!(!controls.barrier_bypass());
+    controls.open();
+    clock.run_until_ready(gate.step(), IMMEDIATELY);
+    assert_eq!(log.take(), []);
+}
+
+#[test]
+fn barrier_bypass_keeps_moving_when_a_barrier_breaks_mid_travel() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, CLOSED, CLOSED, false);
+
+    controls.set_barrier_bypass(true);
+    controls.open();
+    let mut step = Box::pin(gate.step());
+    assert!(clock.run_for(&mut step, Duration::from_secs(4)).is_none());
+    controls.barrier1_set(true);
+    assert_eq!(
+        clock.run_until_ready(step, LIMIT),
+        snapshot(OPEN, OPEN, false)
+    );
+}
+
+#[test]
+fn disarming_barrier_bypass_mid_travel_stops_at_a_broken_barrier() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, CLOSED, CLOSED, false);
+
+    controls.barrier1_set(true);
+    controls.set_barrier_bypass(true);
+    controls.open();
+    let mut step = Box::pin(gate.step());
+    assert!(clock.run_for(&mut step, Duration::from_secs(4)).is_none());
+    controls.set_barrier_bypass(false);
+    clock.run_until_ready(step, IMMEDIATELY);
+    assert!(!log.any_high());
+    assert_eq!(clock.now_ms(), 4000);
+}
+
+#[test]
+fn barrier_bypass_is_kept_when_nothing_moved() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, OPEN, OPEN, false);
+
+    controls.set_barrier_bypass(true);
+    controls.open(); // already open
+    clock.run_until_ready(gate.step(), IMMEDIATELY);
+    controls.stop();
+    clock.run_until_ready(gate.step(), IMMEDIATELY);
+    assert_eq!(log.take(), []);
+    assert!(controls.barrier_bypass());
+}
+
+const LAMP: &str = "lamp";
+const BLINK: Duration = Duration::from_millis(500);
+
+#[test]
+fn warning_light_blinks_only_while_moving() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let lamp_log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, CLOSED, CLOSED, false);
+    let mut lamp = Box::pin(warning_light(&controls, lamp_log.pin(LAMP), BLINK));
+
+    assert!(clock.run_for(&mut lamp, Duration::from_secs(2)).is_none());
+    assert_eq!(lamp_log.take(), []);
+
+    controls.open();
+    let started = clock.now_ms();
+    clock.run_until_ready(select(gate.step(), lamp.as_mut()), LIMIT);
+    assert!(clock.run_for(&mut lamp, Duration::from_secs(5)).is_none());
+
+    // Opening takes 19s: on/off every 500ms, then dark once settled.
+    let expected: Vec<_> = (0..19)
+        .flat_map(|second| {
+            let at = started + second * 1000;
+            [on(at, LAMP), off(at + 500, LAMP)]
+        })
+        .collect();
+    assert_eq!(lamp_log.take(), expected);
+    assert!(!lamp_log.is_high(LAMP));
+}
+
+#[test]
+fn warning_light_blinks_while_barrier_bypass_is_armed() {
+    let clock = sim::reset_clock();
+    let lamp_log = PinLog::new();
+    let controls = Controls::new();
+    let mut lamp = Box::pin(warning_light(&controls, lamp_log.pin(LAMP), BLINK));
+
+    controls.set_barrier_bypass(true);
+    assert!(
+        clock
+            .run_for(&mut lamp, Duration::from_millis(1200))
+            .is_none()
+    );
+    assert_eq!(
+        lamp_log.take(),
+        [on(0, LAMP), off(500, LAMP), on(1000, LAMP)]
+    );
+
+    // Goes dark at the latest after the current half period.
+    controls.set_barrier_bypass(false);
+    assert!(clock.run_for(&mut lamp, Duration::from_secs(3)).is_none());
+    assert_eq!(lamp_log.take(), [off(1500, LAMP)]);
 }
 
 static NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);

@@ -1,7 +1,9 @@
 //! Firmware glue around `gate_core`: the one static [`Controls`] instance,
-//! MQTT state publishing, flash persistence and the gate task. All control
-//! logic (leaf sequencing, impulse cycle, light barriers, wind lock) lives in
-//! the hardware-independent `gate-core` crate, where it's unit-tested.
+//! MQTT state publishing, flash persistence, the gate task and the warning
+//! light task. All control logic (leaf sequencing, impulse cycle, light
+//! barriers and their bypass, wind lock, when the warning light blinks)
+//! lives in the hardware-independent `gate-core` crate, where it's
+//! unit-tested.
 
 use esp_hal::gpio::Output;
 use gate_core::{Controls, CoverState, Gate, LeafTiming, Motor, Snapshot};
@@ -11,7 +13,7 @@ use mqtt_async_embedded::packet::QoS;
 use crate::app::mqtt_topics::*;
 use crate::infra::mqtt_client;
 use crate::infra::storage::{self, GateState, SharedFlash};
-use crate::physical::gate_config::{END_STOP_OVERRUN, REVERSE_PAUSE};
+use crate::physical::gate_config::{END_STOP_OVERRUN, REVERSE_PAUSE, WARNING_LIGHT_HALF_PERIOD};
 
 pub struct MotorSettings {
     /// Already driven low - created first thing in `main` so the relays never
@@ -59,7 +61,20 @@ pub fn barrier2_set(active: bool) {
     CONTROLS.barrier2_set(active);
 }
 
-/// Publishes the current cover and wind-lock state (retained). Never blocks:
+/// Arms/disarms the one-shot light barrier bypass (MQTT switch). Published
+/// right away, since it doesn't go through the gate task until it's used up.
+pub fn set_barrier_bypass(active: bool) {
+    CONTROLS.set_barrier_bypass(active);
+    publish_state();
+}
+
+/// Local bypass input: a press only ever arms the bypass.
+pub fn arm_barrier_bypass() {
+    set_barrier_bypass(true);
+}
+
+/// Publishes the current cover, wind-lock and barrier-bypass state
+/// (retained). Never blocks:
 /// if MQTT is down the message is simply queued or dropped, and the full
 /// state is republished on the next (re)connect anyway.
 pub fn publish_state() {
@@ -87,6 +102,25 @@ pub fn publish_state() {
         QoS::AtLeastOnce,
         true,
     );
+
+    let bypass = if CONTROLS.barrier_bypass() {
+        ON_PAYLOAD
+    } else {
+        OFF_PAYLOAD
+    };
+    mqtt_client::publish(
+        BARRIER_BYPASS_STATE_TOPIC,
+        bypass.as_bytes().to_vec(),
+        QoS::AtLeastOnce,
+        true,
+    );
+}
+
+/// Blinks the warning light while the gate moves or the barrier bypass is
+/// armed (see `gate_core::warning_light`).
+#[embassy_executor::task]
+pub async fn warning_light_task(pin: Output<'static>) -> ! {
+    gate_core::warning_light(&CONTROLS, pin, WARNING_LIGHT_HALF_PERIOD).await
 }
 
 fn motor(settings: MotorSettings) -> Motor<Output<'static>> {

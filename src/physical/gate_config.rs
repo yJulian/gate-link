@@ -39,3 +39,7 @@ pub const END_STOP_OVERRUN: Duration = Duration::from_secs(1);
 /// (in particular in the opposite direction), to protect motors and relays
 /// from an instant reversal under load.
 pub const REVERSE_PAUSE: Duration = Duration::from_millis(1000);
+
+/// The warning light is on for this long, then off for this long, while
+/// blinking.
+pub const WARNING_LIGHT_HALF_PERIOD: Duration = Duration::from_millis(500);

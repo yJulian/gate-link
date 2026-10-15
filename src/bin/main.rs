@@ -90,6 +90,8 @@ async fn main(spawner: Spawner) -> ! {
     let leaf_a_close = relay_output(peripherals.GPIO18.degrade());
     let leaf_b_open = relay_output(peripherals.GPIO19.degrade());
     let leaf_b_close = relay_output(peripherals.GPIO21.degrade());
+    // LAMP_BLINK net: the warning light, driven like a relay.
+    let warning_light = relay_output(peripherals.GPIO14.degrade());
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 98768);
     esp_alloc::heap_allocator!(size: 64 * 1024);
@@ -127,9 +129,8 @@ async fn main(spawner: Spawner) -> ! {
     let wind_reset = pulled_up_input(peripherals.GPIO26.degrade());
     let light_barrier1 = pulled_up_input(peripherals.GPIO27.degrade());
     let light_barrier2 = pulled_up_input(peripherals.GPIO16.degrade());
-    // Unused by any gate function on this board revision - published to MQTT
-    // 1:1 on every level change instead.
-    let spare_input = pulled_up_input(peripherals.GPIO17.degrade());
+    // IN7: arms the one-shot light barrier bypass (same as the MQTT switch).
+    let barrier_bypass_button = pulled_up_input(peripherals.GPIO17.degrade());
 
     // Local gate control is started before - and independently of - any
     // networking: push button, radio remote, wind guard and light barriers
@@ -156,7 +157,11 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(physical::inputs::level_task(light_barrier1, physical::gate::barrier1_set).unwrap());
     spawner
         .spawn(physical::inputs::level_task(light_barrier2, physical::gate::barrier2_set).unwrap());
-    spawner.spawn(physical::inputs::spare_input_task(spare_input).unwrap());
+    spawner.spawn(
+        physical::inputs::edge_task(barrier_bypass_button, physical::gate::arm_barrier_bypass)
+            .unwrap(),
+    );
+    spawner.spawn(physical::gate::warning_light_task(warning_light).unwrap());
 
     let (wifi_controller, interfaces) =
         match esp_radio::wifi::new(peripherals.WIFI, Default::default()) {

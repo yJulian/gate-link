@@ -13,13 +13,14 @@ use mqtt_async_embedded::packet::QoS;
 use crate::app::mqtt_topics::*;
 use crate::infra::mqtt_client;
 
-use crate::physical::gate::{close, open, reset_wind_lock, stop};
+use crate::physical::gate::{close, open, reset_wind_lock, set_barrier_bypass, stop};
 
 #[embassy_executor::task]
 pub async fn task() -> ! {
     // Subscribe to topics
     mqtt_client::subscribe(COVER_COMMAND_TOPIC, QoS::AtLeastOnce).await;
     mqtt_client::subscribe(BUTTON_COMMAND_TOPIC, QoS::AtLeastOnce).await;
+    mqtt_client::subscribe(BARRIER_BYPASS_COMMAND_TOPIC, QoS::AtLeastOnce).await;
 
     loop {
         let message = mqtt_client::receive().await;
@@ -43,6 +44,14 @@ fn on_message(topic: &str, payload: &[u8]) {
             let text = core::str::from_utf8(payload).unwrap_or("");
             match text {
                 RESET_WIND_LOCK_PAYLOAD => reset_wind_lock(),
+                _ => warn!("[{topic}] unhandled payload: {text}"),
+            }
+        }
+        BARRIER_BYPASS_COMMAND_TOPIC => {
+            let text = core::str::from_utf8(payload).unwrap_or("");
+            match text {
+                ON_PAYLOAD => set_barrier_bypass(true),
+                OFF_PAYLOAD => set_barrier_bypass(false),
                 _ => warn!("[{topic}] unhandled payload: {text}"),
             }
         }

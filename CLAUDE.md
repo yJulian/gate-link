@@ -145,6 +145,11 @@ firmware glue: the `static CONTROLS`, `fn()` wrappers for inputs/MQTT,
   everything except barrier 1; barrier 1 always stops; barrier 2 only blocks
   closing. `impulse` is resolved inside the gate task (moving → stop; closed
   → open; open → close; stopped mid-travel → opposite of last direction).
+- `set_barrier_bypass` (MQTT switch, or a press on the IN7 input) arms a
+  one-shot bypass: the next movement that energizes a motor ignores both
+  light barriers, then the bypass clears itself. It is never persisted.
+- `gate_core::warning_light` (own task, `LAMP_BLINK` = GPIO14) blinks while
+  the gate moves (incl. initial delays) and as long as the bypass is armed.
 - After every command settles (completes or is interrupted), position and
   wind-lock state are re-derived, published to MQTT (retained), and persisted
   to flash if changed (`infra::storage::{save_gate_state,load_gate_state}`) —

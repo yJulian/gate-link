@@ -13,9 +13,11 @@
 
 mod gate;
 mod motor;
+mod warning_light;
 
 #[cfg(test)]
 mod sim;
 
 pub use gate::{Controls, CoverState, Gate, GateCommand, Snapshot};
 pub use motor::{Direction, LeafTiming, Motor};
+pub use warning_light::warning_light;

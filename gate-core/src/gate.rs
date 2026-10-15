@@ -81,6 +81,12 @@ pub struct Controls {
     barrier1_active: AtomicBool,
     /// Light barrier 2: stops/blocks closing only, never opening.
     barrier2_active: AtomicBool,
+    /// Both light barriers are ignored while set - a workaround for faulty
+    /// barriers. One-shot: cleared again once the next movement ends.
+    barrier_bypass: AtomicBool,
+    /// Wakes the warning light whenever [`Controls::warning_light_active`]
+    /// may have turned true.
+    light_changed: Signal<CriticalSectionRawMutex, ()>,
 }
 
 impl Default for Controls {
@@ -100,6 +106,8 @@ impl Controls {
             wind_locked: AtomicBool::new(false),
             barrier1_active: AtomicBool::new(false),
             barrier2_active: AtomicBool::new(false),
+            barrier_bypass: AtomicBool::new(false),
+            light_changed: Signal::new(),
         }
     }
 
@@ -177,6 +185,31 @@ impl Controls {
         self.barrier_changed.signal(());
     }
 
+    /// Arms (or disarms) the light barrier bypass: the next open/close
+    /// movement ignores both light barriers, and the bypass clears itself
+    /// once that movement ends (completed or interrupted). Never moves the
+    /// gate by itself.
+    pub fn set_barrier_bypass(&self, active: bool) {
+        self.barrier_bypass.store(active, Ordering::Relaxed);
+        // A running movement re-checks whether it's still allowed to move.
+        self.barrier_changed.signal(());
+        self.light_changed.signal(());
+    }
+
+    pub fn barrier_bypass(&self) -> bool {
+        self.barrier_bypass.load(Ordering::Relaxed)
+    }
+
+    /// The warning light blinks while the gate moves (including initial
+    /// delays) and for as long as the light barrier bypass is armed.
+    pub fn warning_light_active(&self) -> bool {
+        self.current_direction.load(Ordering::Relaxed) != DIR_IDLE || self.barrier_bypass()
+    }
+
+    pub(crate) async fn warning_light_changed(&self) {
+        self.light_changed.wait().await;
+    }
+
     pub fn cover_state(&self) -> CoverState {
         match self.current_direction.load(Ordering::Relaxed) {
             DIR_OPENING => CoverState::Opening,
@@ -189,9 +222,13 @@ impl Controls {
     /// Why the gate may not move in `direction` right now, if anything.
     /// Checked by the gate before and continuously during every movement.
     fn blocked(&self, direction: Direction) -> Option<&'static str> {
-        if self.barrier1_active.load(Ordering::Relaxed) {
+        let barriers_checked = !self.barrier_bypass();
+        if barriers_checked && self.barrier1_active.load(Ordering::Relaxed) {
             Some("light barrier 1 interrupted")
-        } else if direction == Direction::Closing && self.barrier2_active.load(Ordering::Relaxed) {
+        } else if barriers_checked
+            && direction == Direction::Closing
+            && self.barrier2_active.load(Ordering::Relaxed)
+        {
             Some("light barrier 2 interrupted")
         } else if direction == Direction::Closing && self.wind_locked() {
             Some("wind lock engaged")
@@ -222,6 +259,7 @@ impl Controls {
         };
         self.current_direction.store(value, Ordering::Relaxed);
         self.last_direction.store(value, Ordering::Relaxed);
+        self.light_changed.signal(());
     }
 }
 
@@ -332,7 +370,8 @@ impl<'c, P: OutputPin<Error = Infallible>> Gate<'c, P> {
     /// delay, then runs until it reaches the end (plus overrun). Returns
     /// early - with both motors stopped - on a light barrier/wind lock block
     /// or on any command other than one for the same direction; a command
-    /// for the opposite direction is handed back to be executed next.
+    /// for the opposite direction is handed back to be executed next. A
+    /// movement that energized a motor uses up an armed barrier bypass.
     async fn drive(&mut self, direction: Direction) -> Option<GateCommand> {
         let controls = self.controls;
         if let Some(reason) = controls.blocked(direction) {
@@ -346,6 +385,7 @@ impl<'c, P: OutputPin<Error = Infallible>> Gate<'c, P> {
         let a_phase = plan(&self.a, direction, now);
         let b_phase = plan(&self.b, direction, now);
         let mut leaves = [(&mut self.a, a_phase), (&mut self.b, b_phase)];
+        let mut moved = false;
 
         let result = loop {
             if let Some(reason) = controls.blocked(direction) {
@@ -362,6 +402,7 @@ impl<'c, P: OutputPin<Error = Infallible>> Gate<'c, P> {
                     *phase = match motor.run_time(direction) {
                         Some(run_time) => {
                             motor.start(direction);
+                            moved = true;
                             Phase::Running(now + run_time)
                         }
                         None => Phase::Done,
@@ -400,6 +441,9 @@ impl<'c, P: OutputPin<Error = Infallible>> Gate<'c, P> {
 
         for (motor, _) in leaves.iter_mut() {
             motor.stop();
+        }
+        if moved && controls.barrier_bypass.swap(false, Ordering::Relaxed) {
+            info!("Light barrier bypass used up");
         }
         result
     }
