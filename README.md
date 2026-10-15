@@ -12,6 +12,10 @@ ESP32-S3 firmware for a two-leaf gate controller, exposed to [Home Assistant](ht
   only blocks closing
 - Wind guard (anemometer) input that force-opens and locks the gate until
   explicitly reset (dedicated input or an MQTT button)
+- Light barrier bypass (MQTT switch or local input) for faulty barriers:
+  the next open/close movement ignores both barriers, then it turns itself
+  off again
+- Warning light that blinks while the gate moves and while the bypass is on
 - Gate leaf position and wind-lock state persisted to flash, so a power
   loss doesn't lose track of where the gate was
 - First-boot provisioning: the device opens its own Wi-Fi hotspot with an
@@ -19,26 +23,26 @@ ESP32-S3 firmware for a two-leaf gate controller, exposed to [Home Assistant](ht
 
 ## Hardware / wiring
 
-All GPIO assignments, motor travel durations and input polarity are
-hardcoded in `src/bin/main.rs` — edit `run_station_mode`'s wiring section to
-match your installation. Default pinout:
+GPIO assignments and input polarity are hardcoded in the wiring section at
+the top of `main()` in `src/bin/main.rs`; leaf timing lives in
+`src/physical/gate_config.rs`. Default pinout (ESP32-S3-DevKitC-1):
 
-| Signal                       | GPIO |
+| Signal                        | GPIO |
 |-------------------------------|------|
 | BOOT button (config reset)    | 0    |
-| Local push button             | 4    |
-| Radio remote                  | 13   |
-| Wind sensor (anemometer)      | 16   |
-| Wind lock reset               | 17   |
-| Light barrier 1                | 18   |
-| Light barrier 2                | 19   |
-| Left leaf: open relay          | 25   |
-| Left leaf: close relay         | 26   |
-| Right leaf: open relay         | 27   |
-| Right leaf: close relay        | 14   |
+| Leaf A: open / close relay    | 15 / 16 |
+| Leaf B: open / close relay    | 17 / 18 |
+| Warning light (`LAMP_BLINK`)  | 21   |
+| IN1 local push button         | 7    |
+| IN2 radio remote              | 8    |
+| IN3 wind sensor (anemometer)  | 9    |
+| IN4 wind lock reset           | 10   |
+| IN5 light barrier 1           | 11   |
+| IN6 light barrier 2           | 12   |
+| IN7 light barrier bypass      | 13   |
 
-All inputs are active-low with an internal pull-up. Leaf travel time
-defaults to 15s per motor (`LEFT_/RIGHT_MOTOR_DURATION_SECS` in `main.rs`).
+All inputs are active-low with an internal pull-up. Each leaf runs 15s per
+direction by default, with leaf A opening first and leaf B closing first.
 
 ## Building
 
@@ -51,6 +55,7 @@ installed with [`espup`](https://github.com/esp-rs/espup). The target
 cargo build --release              # what CI builds
 cargo fmt --all -- --check
 cargo clippy --all-features --workspace -- -D warnings
+cargo test-core                    # host unit tests (gate-core, app-core, MQTT client)
 cargo run                          # builds, flashes and opens a serial monitor via espflash
 ```
 
@@ -70,13 +75,14 @@ cargo run                          # builds, flashes and opens a serial monitor 
 ## Home Assistant integration
 
 On connecting to the broker, the device publishes retained MQTT Discovery
-configs for three entities:
+configs for four entities:
 
-| Entity                          | Type          | Notes                                   |
-|----------------------------------|---------------|------------------------------------------|
-| Gate (`mqtt_gate_cover`)         | Cover         | open / close / stop, reports position    |
-| Windwächter (`mqtt_gate_wind`)   | Binary sensor | on while the wind lock is engaged        |
-| Windwächter zurücksetzen (`mqtt_gate_reset_anemometer`) | Button | clears the wind lock |
+| Entity                                               | Type          | Notes                                              |
+|------------------------------------------------------|---------------|----------------------------------------------------|
+| Gate (`mqtt_gate_cover`)                             | Cover         | open / close / stop, reports position              |
+| Wind Monitor Input (`mqtt_gate_wind`)                | Binary sensor | on while the wind lock is engaged                  |
+| Light Barrier Bypass (`mqtt_gate_barrier_bypass`)    | Switch        | ignore the light barriers for the next movement    |
+| Reset Windmonitor (`mqtt_gate_reset_anemometer`)     | Button        | clears the wind lock                               |
 
 No manual entity configuration in Home Assistant is required — they appear
 automatically once the device connects.
