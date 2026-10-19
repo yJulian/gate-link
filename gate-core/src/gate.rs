@@ -1,7 +1,7 @@
 use core::convert::Infallible;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
@@ -61,6 +61,9 @@ pub struct Controls {
     /// Wakes a running movement whenever a light barrier changes, so it
     /// re-checks whether it's still allowed to move.
     barrier_changed: Signal<CriticalSectionRawMutex, ()>,
+    /// Tells the gate the wind lock was reset, so it publishes/persists the
+    /// new state - without interrupting a movement, unlike a command.
+    wind_lock_reset: Signal<CriticalSectionRawMutex, ()>,
     /// What the gate is doing right now (including leaves still waiting out
     /// their initial delay). `DIR_IDLE` whenever no movement is in flight.
     current_direction: AtomicU8,
@@ -100,6 +103,7 @@ impl Controls {
         Controls {
             command: Signal::new(),
             barrier_changed: Signal::new(),
+            wind_lock_reset: Signal::new(),
             current_direction: AtomicU8::new(DIR_IDLE),
             last_direction: AtomicU8::new(DIR_CLOSING),
             position: AtomicU8::new(POS_CLOSED),
@@ -162,11 +166,12 @@ impl Controls {
         self.send(GateCommand::Open);
     }
 
-    /// Clears the wind lock. Queues a (harmless if already idle) STOP so the
-    /// gate republishes/persists the new state promptly.
+    /// Clears the wind lock. Never moves or stops the gate: a forced open
+    /// still runs to the end, and so does any other movement in flight. The
+    /// gate only republishes/persists the new state.
     pub fn reset_wind_lock(&self) {
         self.wind_locked.store(false, Ordering::Relaxed);
-        self.send(GateCommand::Stop);
+        self.wind_lock_reset.signal(());
     }
 
     /// Light barrier 1 (always stops, regardless of direction).
@@ -329,11 +334,19 @@ impl<'c, P: OutputPin<Error = Infallible>> Gate<'c, P> {
     }
 
     /// Waits for the next command (unless one is pending), executes it until
-    /// it completes or is interrupted, and returns the settled state.
+    /// it completes or is interrupted, and returns the settled state. A wind
+    /// lock reset while idle settles right away, without touching the motors.
     pub async fn step(&mut self) -> Snapshot {
+        let controls = self.controls;
         let command = match self.pending.take() {
             Some(command) => command,
-            None => self.controls.command.wait().await,
+            None => match select(controls.command.wait(), controls.wind_lock_reset.wait()).await {
+                Either::First(command) => command,
+                Either::Second(()) => {
+                    info!("Wind lock reset");
+                    return self.settle();
+                }
+            },
         };
         let command = self.controls.resolve_impulse(command);
         info!("Gate command: {command:?}");
@@ -425,17 +438,20 @@ impl<'c, P: OutputPin<Error = Infallible>> Gate<'c, P> {
                 break None;
             };
 
-            match select3(
+            match select4(
                 Timer::at(next_deadline),
                 controls.command.wait(),
                 controls.barrier_changed.wait(),
+                controls.wind_lock_reset.wait(),
             )
             .await
             {
-                Either3::Second(command) if command == command_for(direction) => {}
-                Either3::Second(GateCommand::Stop | GateCommand::Impulse) => break None,
-                Either3::Second(command) => break Some(command),
-                Either3::First(()) | Either3::Third(()) => {}
+                Either4::Second(command) if command == command_for(direction) => {}
+                Either4::Second(GateCommand::Stop | GateCommand::Impulse) => break None,
+                Either4::Second(command) => break Some(command),
+                Either4::First(()) | Either4::Third(()) => {}
+                // Keeps moving; just announce the cleared lock right away.
+                Either4::Fourth(()) => (self.notify)(),
             }
         };
 

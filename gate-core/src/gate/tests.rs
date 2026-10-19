@@ -424,6 +424,101 @@ fn wind_guard_reverses_closing_and_locks_until_reset() {
 }
 
 #[test]
+fn wind_lock_reset_during_forced_open_keeps_opening() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, CLOSED, CLOSED, false);
+
+    controls.wind_trigger();
+    let mut step = Box::pin(gate.step());
+    assert!(clock.run_for(&mut step, Duration::from_secs(5)).is_none());
+    controls.reset_wind_lock();
+
+    // Same relay sequence as an uninterrupted open.
+    assert_eq!(
+        clock.run_until_ready(step, LIMIT),
+        snapshot(OPEN, OPEN, false)
+    );
+    assert_eq!(
+        log.take(),
+        [
+            on(0, A_OPEN),
+            on(3000, B_OPEN),
+            off(16000, A_OPEN),
+            off(19000, B_OPEN),
+        ]
+    );
+}
+
+#[test]
+fn wind_lock_reset_does_not_stop_closing() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let mut gate = gate(&controls, &log, OPEN, OPEN, false);
+
+    controls.close();
+    let mut step = Box::pin(gate.step());
+    assert!(clock.run_for(&mut step, Duration::from_secs(5)).is_none());
+    controls.reset_wind_lock();
+
+    assert_eq!(
+        clock.run_until_ready(step, LIMIT),
+        snapshot(CLOSED, CLOSED, false)
+    );
+    assert_eq!(
+        log.take(),
+        [
+            on(0, B_CLOSE),
+            on(3000, A_CLOSE),
+            off(16000, B_CLOSE),
+            off(19000, A_CLOSE),
+        ]
+    );
+}
+
+static RESET_NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);
+
+fn count_reset_notify() {
+    RESET_NOTIFICATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[test]
+fn wind_lock_reset_mid_travel_is_announced_right_away() {
+    let clock = sim::reset_clock();
+    let log = PinLog::new();
+    let controls = Controls::new();
+    let a = Motor::new(
+        log.pin(A_OPEN),
+        log.pin(A_CLOSE),
+        LEAF_A,
+        OVERRUN,
+        REVERSE_PAUSE,
+        CLOSED,
+    );
+    let b = Motor::new(
+        log.pin(B_OPEN),
+        log.pin(B_CLOSE),
+        LEAF_B,
+        OVERRUN,
+        REVERSE_PAUSE,
+        CLOSED,
+    );
+    let mut gate = Gate::new(&controls, a, b, false, count_reset_notify);
+
+    controls.wind_trigger();
+    let mut step = Box::pin(gate.step());
+    assert!(clock.run_for(&mut step, Duration::from_secs(5)).is_none());
+    RESET_NOTIFICATIONS.store(0, Ordering::Relaxed);
+    controls.reset_wind_lock();
+    assert!(clock.run_for(&mut step, Duration::from_secs(1)).is_none());
+    assert_eq!(RESET_NOTIFICATIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(controls.cover_state(), CoverState::Opening);
+    assert!(!controls.wind_locked());
+}
+
+#[test]
 fn wind_guard_open_waits_for_light_barrier_1_to_clear() {
     let clock = sim::reset_clock();
     let log = PinLog::new();
